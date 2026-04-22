@@ -21,7 +21,7 @@ namespace AOSharp.Injection
                 // Get the bootstrap DLL path
                 var bootstrapDllPath = Path.Combine(
                     Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location),
-                    "NativeHost2.dll");
+                    "NativeHost.dll");
                 
                 if (!File.Exists(bootstrapDllPath))
                 {

@@ -147,6 +147,8 @@ namespace AOSharp.Bootstrap
         [UnmanagedCallersOnly]
         public static void Initialize()
         {
+            Log.Information("[Bootstrap] Initialize");
+
             if (_initialized)
                 return;
 
