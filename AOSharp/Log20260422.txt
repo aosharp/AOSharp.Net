@@ -1,0 +1,47 @@
+2026-04-22 08:15:52.761 -05:00 [INF] [Bootstrap] Main
+2026-04-22 08:15:52.805 -05:00 [INF] [Bootstrap] ModuleInit
+2026-04-22 08:15:55.224 -05:00 [INF] Bootstrap DLL injected successfully
+2026-04-22 08:15:55.738 -05:00 [INF] [AOSharp] Connecting to pipe server with name 2632
+2026-04-22 08:24:45.428 -05:00 [INF] [Bootstrap] Main
+2026-04-22 08:24:45.462 -05:00 [INF] [Bootstrap] ModuleInit
+2026-04-22 08:24:47.670 -05:00 [INF] Bootstrap DLL injected successfully
+2026-04-22 08:24:48.172 -05:00 [INF] [AOSharp] Connecting to pipe server with name 32036
+2026-04-22 08:24:51.687 -05:00 [ERR] Failed to inject bootloader. 
+
+Pipe is broken.
+2026-04-22 08:28:49.109 -05:00 [INF] [Bootstrap] Main
+2026-04-22 08:28:49.143 -05:00 [INF] [Bootstrap] ModuleInit
+2026-04-22 08:28:51.318 -05:00 [INF] Bootstrap DLL injected successfully
+2026-04-22 08:28:51.823 -05:00 [INF] [AOSharp] Connecting to pipe server with name 40868
+2026-04-22 08:28:54.316 -05:00 [ERR] Failed to inject bootloader. 
+
+Pipe is broken.
+2026-04-22 08:30:35.455 -05:00 [INF] [Bootstrap] Main
+2026-04-22 08:30:35.490 -05:00 [INF] [Bootstrap] ModuleInit
+2026-04-22 08:30:37.689 -05:00 [INF] Bootstrap DLL injected successfully
+2026-04-22 08:30:38.204 -05:00 [INF] [AOSharp] Connecting to pipe server with name 4040
+2026-04-22 08:30:40.751 -05:00 [ERR] Failed to inject bootloader. 
+
+Pipe is broken.
+2026-04-22 08:32:00.713 -05:00 [INF] [Bootstrap] Main
+2026-04-22 08:32:00.747 -05:00 [INF] [Bootstrap] ModuleInit
+2026-04-22 08:32:02.930 -05:00 [INF] Bootstrap DLL injected successfully
+2026-04-22 08:32:03.445 -05:00 [INF] [AOSharp] Connecting to pipe server with name 37812
+2026-04-22 08:32:52.067 -05:00 [INF] [Bootstrap] Main
+2026-04-22 08:32:52.101 -05:00 [INF] [Bootstrap] ModuleInit
+2026-04-22 08:32:54.307 -05:00 [INF] Bootstrap DLL injected successfully
+2026-04-22 08:32:54.810 -05:00 [INF] [AOSharp] Connecting to pipe server with name 27564
+2026-04-22 08:34:03.451 -05:00 [INF] [Bootstrap] Main
+2026-04-22 08:34:03.484 -05:00 [INF] [Bootstrap] ModuleInit
+2026-04-22 08:34:05.663 -05:00 [INF] Bootstrap DLL injected successfully
+2026-04-22 08:34:06.173 -05:00 [INF] [AOSharp] Connecting to pipe server with name 25348
+2026-04-22 08:36:39.488 -05:00 [INF] [AOSharp] Reconnected to existing bootstrap (no injection).
+2026-04-22 08:39:44.638 -05:00 [INF] [Bootstrap] Main
+2026-04-22 08:39:44.672 -05:00 [INF] [Bootstrap] ModuleInit
+2026-04-22 08:39:46.867 -05:00 [INF] Bootstrap DLL injected successfully
+2026-04-22 08:39:47.383 -05:00 [INF] [AOSharp] Connecting to pipe server with name 39388
+2026-04-22 09:01:12.443 -05:00 [INF] [AOSharp] Reconnected to existing bootstrap (no injection).
+2026-04-22 09:03:39.741 -05:00 [INF] [AOSharp] Reconnected to existing bootstrap (no injection).
+2026-04-22 09:03:50.943 -05:00 [INF] [AOSharp] Reconnected to existing bootstrap (no injection).
+2026-04-22 09:04:34.687 -05:00 [INF] Bootstrap DLL injected successfully
+2026-04-22 09:04:35.194 -05:00 [INF] [AOSharp] Connecting to pipe server with name 27284

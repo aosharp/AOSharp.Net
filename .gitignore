@@ -1,0 +1,59 @@
+# User-specific files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+[Pp]ackages/
+
+# Visual Studio cache/options directory
+.vs/
+
+# .NET Core
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# NuGet Packages
+*.nupkg
+*.snupkg
+*.nuspec
+/AOSharpSDK.nuspec.bak
+/AOSharpSDK.Nav.nuspec.bak
+/nuget.exe
+# The packages folder can be ignored because of Package Restore
+**/[Pp]ackages/*
+# except build/, which is used as an MSBuild target.
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+
+# Visual Studio code coverage results
+*.coverage
+*.coveragexml
+
+# Test results
+[Tt]est[Rr]esult*/
+
+# Backup & temp files
+*.old
+*.bak
+*.tmp
+
+# JetBrains Rider
+.idea/
+*.sln.iml
