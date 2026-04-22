@@ -2,6 +2,8 @@
 
 AOSharp is a plugin framework for **Anarchy Online** that lets you write C# plugins to automate, extend, or enhance your gameplay experience. It handles all the low-level integration with the game so you can focus on building.
 
+> **Note:** AOSharp is primarily built for the **classic game engine**. Some features may not work correctly on the new engine.
+
 ---
 
 ## What It Does
