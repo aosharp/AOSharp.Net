@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>aosharp-ui</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // Forward uncaught errors to C# host for logging
+      window.onerror = function(msg, src, line, col, err) {
+        try {
+          var payload = JSON.stringify({ type: 'toast', level: 'error', title: 'JS Error', message: msg + ' (' + src + ':' + line + ')' });
+          window.chrome && window.chrome.webview && window.chrome.webview.postMessage(payload);
+        } catch(e) {}
+        return false;
+      };
+      window.onunhandledrejection = function(e) {
+        try {
+          var payload = JSON.stringify({ type: 'toast', level: 'error', title: 'Unhandled Promise', message: String(e.reason) });
+          window.chrome && window.chrome.webview && window.chrome.webview.postMessage(payload);
+        } catch(e2) {}
+      };
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

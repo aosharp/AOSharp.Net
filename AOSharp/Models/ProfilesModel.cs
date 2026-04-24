@@ -13,6 +13,8 @@ namespace AOSharp.Models
     {
         public ObservableCollection<Profile> Profiles { get; set; }
 
+        public event EventHandler ProfilesRefreshed;
+
         private readonly DispatcherTimer _timer;
 
         public ProfilesModel(Config config)
@@ -55,6 +57,8 @@ namespace AOSharp.Models
                 profile.IsActive = true;
                 profile.Process = aoClient;
             }
+
+            ProfilesRefreshed?.Invoke(this, EventArgs.Empty);
         }
 
         public event PropertyChangedEventHandler PropertyChanged;

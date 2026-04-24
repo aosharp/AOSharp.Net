@@ -1,316 +1,92 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.Diagnostics;
-using System.Linq;
-using System.Text;
 using System.IO;
-using System.Threading.Tasks;
-using System.Globalization;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
-using System.Collections.Specialized;
-using System.ComponentModel;
-using Microsoft.Win32;
-using MahApps.Metro.Controls;
-using MahApps.Metro.Controls.Dialogs;
+using Microsoft.Web.WebView2.Core;
 using AOSharp.Data;
 using AOSharp.Models;
+using AOSharp.Services;
 using Serilog;
 
 namespace AOSharp
 {
-    /// <summary>
-    /// Interaction logic for MainWindow.xaml
-    /// </summary>
-    public partial class MainWindow : MetroWindow, INotifyPropertyChanged
+    public partial class MainWindow : Window
     {
-        //private ObservableCollection<Profile> _profiles;
-        //public ObservableCollection<Profile> Profiles { get { return _profiles; } }
-
-        //private ObservableCollection<Assembly> _assemblies;
-        //public ObservableCollection<Assembly> Assemblies { get { return _assemblies; } }
-
-        public Config Config;
-
-        private Profile _activeProfile;
-
-        public Profile ActiveProfile
-        {
-            get { return _activeProfile; }
-            set
-            {
-                _activeProfile = value;
-                OnPropertyChanged("ActiveProfile");
-            }
-        }
-
-        private bool _hasProfileSelected;
-
-        public bool HasProfileSelected
-        {
-            get { return _hasProfileSelected; }
-            set
-            {
-                _hasProfileSelected = value;
-                OnPropertyChanged("HasProfileSelected");
-            }
-        }
+        private Config _config;
+        private ProfilesModel _profilesModel;
+        private WebMessageBridge _bridge;
 
         public MainWindow()
         {
-            //_profiles = GetProfiles();
-            //_assemblies = GetAssemblies();
-
             Log.Logger = new LoggerConfiguration()
                 .WriteTo.File("Log.txt", rollingInterval: RollingInterval.Day)
                 .CreateLogger();
 
-            Config = Config.Load(Directories.ConfigFilePath);
-
-            Config.Plugins.CollectionChanged += (object sender, NotifyCollectionChangedEventArgs e) =>
-            {
-                if(e.Action == NotifyCollectionChangedAction.Add || e.Action == NotifyCollectionChangedAction.Remove)
-                Config.Save();
-            };
-
-            this.DataContext = this;
+            _config = Config.Load(Directories.ConfigFilePath);
+            _profilesModel = new ProfilesModel(_config);
 
             InitializeComponent();
 
-            PluginsDataGrid.DataContext = Config;
-            ProfileListBox.DataContext = new ProfilesModel(Config);
+            Loaded += OnLoaded;
         }
 
-        private async void ShowAddPluginDialog(object sender, RoutedEventArgs e)
+        private async void OnLoaded(object sender, RoutedEventArgs e)
         {
-            BaseMetroDialog dialog = (BaseMetroDialog)this.Resources["AddPluginDialog"];
-            dialog.DataContext = new AddAssemblyModel();
-            await this.ShowMetroDialogAsync(dialog);
-            await dialog.WaitUntilUnloadedAsync();
-        }
-
-        private async void CloseAddPluginDialog(object sender, RoutedEventArgs e)
-        {
-            BaseMetroDialog dialog = (BaseMetroDialog)this.Resources["AddPluginDialog"];
-            await this.HideMetroDialogAsync(dialog);
-        }
-
-        private void LocalPathDialogButton_Click(object sender, RoutedEventArgs e)
-        {
-            OpenFileDialog dialog = new OpenFileDialog() { Filter = "DLL Files (*.dll)|*.dll" };
-
-            if (dialog.ShowDialog() == true)
+            try
             {
-                BaseMetroDialog addPluginDialog = (BaseMetroDialog)this.Resources["AddPluginDialog"];
-                ((AddAssemblyModel)addPluginDialog.DataContext).DllPath = dialog.FileName;
+                await WebView.EnsureCoreWebView2Async();
+
+                // Map virtual hostname → React dist folder
+                string distPath = GetDistPath();
+                WebView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                    "aosharp.ui",
+                    distPath,
+                    CoreWebView2HostResourceAccessKind.Allow);
+
+                // Wire up bridge
+                var repoCompiler = new RepoCompiler();
+                _bridge = new WebMessageBridge(WebView, _config, _profilesModel, repoCompiler, Dispatcher);
+                WebView.CoreWebView2.WebMessageReceived += _bridge.OnMessageReceived;
+
+                // Log any navigation / console errors for diagnostics
+                WebView.CoreWebView2.NavigationCompleted += (_, args) =>
+                {
+                    if (!args.IsSuccess)
+                        Log.Error($"[UI] Navigation failed: {args.WebErrorStatus}");
+                    else
+                        Log.Information("[UI] Navigation succeeded");
+                };
+
+                WebView.CoreWebView2.WebResourceResponseReceived += (_, args) =>
+                {
+                    if (args.Response.StatusCode >= 400)
+                        Log.Warning($"[UI] Resource error {args.Response.StatusCode}: {args.Request.Uri}");
+                };
+
+                WebView.Source = new Uri("https://aosharp.ui/index.html");
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"WebView2 initialisation failed: {ex}");
+                MessageBox.Show($"Failed to initialise WebView2:\n{ex.Message}", "AO#", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
-        private async void AddPluginButton_Click(object sender, RoutedEventArgs e)
+        private static string GetDistPath()
         {
-            BaseMetroDialog addPluginDialog = (BaseMetroDialog)this.Resources["AddPluginDialog"];
-            AddAssemblyModel dataModel = (AddAssemblyModel)addPluginDialog.DataContext;
+            string exeDir = AppDomain.CurrentDomain.BaseDirectory;
 
-            if (string.IsNullOrEmpty(dataModel.DllPath))
+            // Deployed: ui/ folder copied next to the exe by build.bat
+            string deployed = Path.GetFullPath(Path.Combine(exeDir, "ui"));
+            if (Directory.Exists(deployed))
             {
-                await this.ShowMessageAsync("Error", "No plugin path specified.");
-                return;
+                Log.Information($"[UI] Using deployed dist: {deployed}");
+                return deployed;
             }
 
-            if (dataModel.DllPath.ToLower().Contains("\\obj\\"))
-            {
-                await this.ShowMessageAsync("Error", $"Invalid plugin path specified: path should not include \\obj\\. Did you mean {dataModel.DllPath.Replace("\\obj\\", "\\bin\\")}?");
-                return;
-            }
-
-            //Should never happen but just in case some idiot deletes a plugin after selecting it..
-            if (!File.Exists(dataModel.DllPath))
-                return;
-
-            FileVersionInfo fileInfo = FileVersionInfo.GetVersionInfo(dataModel.DllPath);
-
-            Config.Plugins.Add(Utils.HashFromFile(dataModel.DllPath), new PluginModel()
-            {
-                Name = fileInfo.ProductName,
-                Version = fileInfo.FileVersion,
-                Path = dataModel.DllPath
-            });
-
-            await this.HideMetroDialogAsync(addPluginDialog);
-        }
-
-        private void PluginEnabledCheckBox_Click(object sender, RoutedEventArgs e)
-        {
-            Profile selectedProfile = (Profile)ProfileListBox.SelectedItem;
-
-            if (selectedProfile == null)
-                return;
-
-            KeyValuePair<string, PluginModel> plugin = (KeyValuePair<string, PluginModel>)PluginsDataGrid.SelectedItem;
-
-            if (plugin.Value.IsEnabled)
-                selectedProfile.EnabledPlugins.Add(plugin.Key);
-            else
-                selectedProfile.EnabledPlugins.Remove(plugin.Key);
-
-            if (!Config.Profiles.Contains(selectedProfile))
-                Config.Profiles.Add(selectedProfile);
-
-            Config.Save();
-        }
-
-        private void ProfileListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            Profile profile = (Profile)ProfileListBox.SelectedItem;
-
-            HasProfileSelected = profile != null;
-            ActiveProfile = profile;
-
-            if(profile == null)
-            {
-                foreach (PluginModel plugin in Config.Plugins.Values)
-                    plugin.IsEnabled = false;
-
-                PluginsDataGrid.IsEnabled = false;
-            }
-            else if(!PluginsDataGrid.IsEnabled)
-            {
-                PluginsDataGrid.IsEnabled = true;
-            }
-
-            foreach (KeyValuePair<string, PluginModel> plugin in Config.Plugins)
-                plugin.Value.IsEnabled = profile.EnabledPlugins.Contains(plugin.Key);
-        }
-
-        private async void InjectButton_Clicked(object sender, RoutedEventArgs e)
-        {
-            Profile profile = (Profile)ProfileListBox.SelectedItem;
-
-            if (profile == null)
-                return;
-
-            IEnumerable<string> plugins = Config.Plugins.Where(x => profile.EnabledPlugins.Contains(x.Key)).Select(x => x.Value.Path);
-
-            if(!plugins.Any())
-            {
-                await this.ShowMessageAsync("Error", "No plugins selected.");
-                return;
-            }
-
-            if(profile.Inject(plugins))
-            {
-                PluginsDataGrid.IsEnabled = false;
-            }
-            else
-            {
-                await this.ShowMessageAsync("Error", "Failed to inject.");
-            }
-        }
-
-        private void EjectButton_Clicked(object sender, RoutedEventArgs e)
-        {
-            Profile profile = (Profile)ProfileListBox.SelectedItem;
-
-            if (profile == null)
-                return;
-
-            profile.Eject();
-
-            PluginsDataGrid.IsEnabled = true;
-        }
-
-        private void TweaksButton_Click(object sender, RoutedEventArgs e)
-        {
-            var tweaksWindow = new TweaksWindow();
-            tweaksWindow.Owner = this;
-            tweaksWindow.ShowDialog();
-        }
-
-        public event PropertyChangedEventHandler PropertyChanged;
-
-        private void OnPropertyChanged(string propertyName)
-        {
-            if (PropertyChanged != null)
-            {
-                PropertyChanged(this, new PropertyChangedEventArgs(propertyName));
-            }
-        }
-    }
-
-    [ValueConversion(typeof(bool), typeof(Visibility))]
-    public sealed class BoolToVisibilityConverter : IValueConverter
-    {
-        public Visibility TrueValue { get; set; }
-        public Visibility FalseValue { get; set; }
-
-        public BoolToVisibilityConverter()
-        {
-            // set defaults
-            TrueValue = Visibility.Visible;
-            FalseValue = Visibility.Collapsed;
-        }
-
-        public object Convert(object value, Type targetType,
-            object parameter, CultureInfo culture)
-        {
-            if (!(value is bool))
-                return null;
-            return (bool)value ? TrueValue : FalseValue;
-        }
-
-        public object ConvertBack(object value, Type targetType,
-            object parameter, CultureInfo culture)
-        {
-            if (Equals(value, TrueValue))
-                return true;
-            if (Equals(value, FalseValue))
-                return false;
-            return null;
-        }
-    }
-
-    public class RemovePluginConverter : IMultiValueConverter
-    {
-        public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture)
-        {
-            if (values[1] == DependencyProperty.UnsetValue)
-            {
-                return null;
-            }
-
-            Tuple<ObservableDictionary<string, PluginModel>, string> tuple = new Tuple<ObservableDictionary<string, PluginModel>, string>(
-                (ObservableDictionary<string, PluginModel>)values[0], (string)values[1]);
-            return tuple;
-        }
-
-        public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture)
-        {
-            throw new NotImplementedException();
-        }
-    }
-
-    public class PathIsInvalidConverter : IValueConverter
-    {
-        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
-        {
-            if (value is string path)
-            {
-                return path.Contains(@"\obj\");
-            }
-            return false;
-        }
-
-        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
-        {
-            throw new NotImplementedException();
+            // Dev: exe is at Loader\bin\{Config}\net8.0-windows\ → go up 3 to reach Loader\
+            string dev = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "..", "AOSharp.UI", "dist"));
+            Log.Information($"[UI] Using dev dist: {dev} (exists={Directory.Exists(dev)})");
+            return dev;
         }
     }
 }

@@ -19,5 +19,13 @@ namespace AOSharp
             string hash = BitConverter.ToString(encodedBytes);
             return hash.Replace("-", string.Empty);
         }
+
+        public static string HashFromString(string value)
+        {
+            MD5 md5 = new MD5CryptoServiceProvider();
+            byte[] inputBytes = System.Text.Encoding.UTF8.GetBytes(value);
+            byte[] encodedBytes = md5.ComputeHash(inputBytes);
+            return BitConverter.ToString(encodedBytes).Replace("-", string.Empty);
+        }
     }
 }

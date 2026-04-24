@@ -1,0 +1,37 @@
+2026-04-24 10:05:44.739 -05:00 [INF] [AutoUpdate] Checking for repo updates...
+2026-04-24 10:05:44.795 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Processing repo: https://github.com/aosharp/AOSharp.SDK
+2026-04-24 10:05:44.796 -05:00 [INF] [Compile] AOSharp.SDK: Processing repo: https://github.com/aosharp/AOSharp.SDK
+2026-04-24 10:05:46.095 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Building AOSharp.SDK.sln...
+2026-04-24 10:05:46.095 -05:00 [INF] [Compile] AOSharp.SDK: Building AOSharp.SDK.sln...
+2026-04-24 10:05:51.240 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Built: C:\Users\tagyo\Documents\AOSharpDotNet\Loader\bin\Debug\net8.0-windows\repos\EC0AA134539CE93593B7117E2066C416\bin\x86\Release\net8.0-windows\AOSharp.Common.dll
+2026-04-24 10:05:51.240 -05:00 [INF] [Compile] AOSharp.SDK: Built: C:\Users\tagyo\Documents\AOSharpDotNet\Loader\bin\Debug\net8.0-windows\repos\EC0AA134539CE93593B7117E2066C416\bin\x86\Release\net8.0-windows\AOSharp.Common.dll
+2026-04-24 10:05:51.565 -05:00 [INF] [AutoUpdate] Done.
+2026-04-24 10:06:15.669 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Processing repo: https://github.com/aosharp/AOSharp.SDK
+2026-04-24 10:06:15.669 -05:00 [INF] [Compile] AOSharp.SDK: Processing repo: https://github.com/aosharp/AOSharp.SDK
+2026-04-24 10:06:16.308 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Building AOSharp.SDK.sln...
+2026-04-24 10:06:16.308 -05:00 [INF] [Compile] AOSharp.SDK: Building AOSharp.SDK.sln...
+2026-04-24 10:06:19.370 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Built: C:\Users\tagyo\Documents\AOSharpDotNet\Loader\bin\Debug\net8.0-windows\repos\EC0AA134539CE93593B7117E2066C416\bin\x86\Release\net8.0-windows\AOSharp.Common.dll
+2026-04-24 10:06:19.371 -05:00 [INF] [Compile] AOSharp.SDK: Built: C:\Users\tagyo\Documents\AOSharpDotNet\Loader\bin\Debug\net8.0-windows\repos\EC0AA134539CE93593B7117E2066C416\bin\x86\Release\net8.0-windows\AOSharp.Common.dll
+2026-04-24 10:06:43.483 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Processing repo: https://github.com/aosharp/AOSharp.SDK
+2026-04-24 10:06:43.483 -05:00 [INF] [Compile] AOSharp.SDK: Processing repo: https://github.com/aosharp/AOSharp.SDK
+2026-04-24 10:06:44.098 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Building AOSharp.SDK.sln...
+2026-04-24 10:06:44.098 -05:00 [INF] [Compile] AOSharp.SDK: Building AOSharp.SDK.sln...
+2026-04-24 10:06:47.397 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Built: C:\Users\tagyo\Documents\AOSharpDotNet\Loader\bin\Debug\net8.0-windows\repos\EC0AA134539CE93593B7117E2066C416\bin\x86\Release\net8.0-windows\AOSharp.Common.dll
+2026-04-24 10:06:47.397 -05:00 [INF] [Compile] AOSharp.SDK: Built: C:\Users\tagyo\Documents\AOSharpDotNet\Loader\bin\Debug\net8.0-windows\repos\EC0AA134539CE93593B7117E2066C416\bin\x86\Release\net8.0-windows\AOSharp.Common.dll
+2026-04-24 10:08:35.598 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Processing repo: https://github.com/aosharp/AOSharp.SDK
+2026-04-24 10:08:35.598 -05:00 [INF] [Compile] AOSharp.SDK: Processing repo: https://github.com/aosharp/AOSharp.SDK
+2026-04-24 10:08:36.244 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Building AOSharp.SDK.sln...
+2026-04-24 10:08:36.244 -05:00 [INF] [Compile] AOSharp.SDK: Building AOSharp.SDK.sln...
+2026-04-24 10:08:39.274 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Built: C:\Users\tagyo\Documents\AOSharpDotNet\Loader\bin\Debug\net8.0-windows\repos\EC0AA134539CE93593B7117E2066C416\bin\x86\Release\net8.0-windows\AOSharp.Common.dll
+2026-04-24 10:08:39.274 -05:00 [INF] [Compile] AOSharp.SDK: Built: C:\Users\tagyo\Documents\AOSharpDotNet\Loader\bin\Debug\net8.0-windows\repos\EC0AA134539CE93593B7117E2066C416\bin\x86\Release\net8.0-windows\AOSharp.Common.dll
+2026-04-24 11:21:15.020 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Processing repo: https://github.com/aosharp/AOSharp.SDK
+2026-04-24 11:21:15.052 -05:00 [INF] [Compile] AOSharp.SDK: Processing repo: https://github.com/aosharp/AOSharp.SDK
+2026-04-24 11:21:16.339 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Building AOSharp.SDK.sln...
+2026-04-24 11:21:16.339 -05:00 [INF] [Compile] AOSharp.SDK: Building AOSharp.SDK.sln...
+2026-04-24 11:21:20.374 -05:00 [INF] [RepoCompiler] AOSharp.SDK: Built: C:\Users\tagyo\Documents\AOSharpDotNet\Loader\bin\Debug\net8.0-windows\Plugins\AOSharp.SDK\AOSharp.Common.dll
+2026-04-24 11:21:20.374 -05:00 [INF] [Compile] AOSharp.SDK: Built: C:\Users\tagyo\Documents\AOSharpDotNet\Loader\bin\Debug\net8.0-windows\Plugins\AOSharp.SDK\AOSharp.Common.dll
+2026-04-24 14:23:16.125 -05:00 [INF] [UI] Using deployed dist: C:\Users\tagyo\Documents\AOSharpDotNet\Loader\bin\Release\net8.0-windows\ui
+2026-04-24 14:23:16.300 -05:00 [INF] [UI] Navigation succeeded
+2026-04-24 14:23:16.563 -05:00 [ERR] [UI] UI Error: Minified React error #185; visit https://react.dev/errors/185 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+2026-04-24 14:35:23.483 -05:00 [INF] [UI] Using deployed dist: C:\Users\tagyo\Documents\AOSharpDotNet\Loader\bin\Release\net8.0-windows\ui
+2026-04-24 14:35:23.659 -05:00 [INF] [UI] Navigation succeeded

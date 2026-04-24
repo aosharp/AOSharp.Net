@@ -11,6 +11,9 @@ namespace AOSharp
 {
     public class Config
     {
+        public const string AoSharpSdkKey = "aosharp-sdk-default";
+        public const string AoSharpSdkRepoUrl = "https://github.com/aosharp/AOSharp.SDK";
+
         public ObservableDictionary<string, PluginModel> Plugins { get; set; }
 
         public ObservableCollection<Profile> Profiles { get; set; }
@@ -35,6 +38,7 @@ namespace AOSharp
             }
 
             config._path = path;
+            config.EnsureDefaults();
 
             return config;
         }
@@ -42,6 +46,53 @@ namespace AOSharp
         public void Save()
         {
             File.WriteAllText(_path, JsonConvert.SerializeObject(this, Formatting.Indented));
+        }
+
+        /// <summary>
+        /// Ensures built-in defaults (AOSharp.SDK) are present and marked correctly.
+        /// Works whether the SDK exists as a single stub or has been expanded to per-project entries.
+        /// </summary>
+        public void EnsureDefaultsPublic() => EnsureDefaults();
+
+        private void EnsureDefaults()
+        {
+            var sdkEntries = Plugins
+                .Where(kvp => kvp.Value.RepoUrl == AoSharpSdkRepoUrl)
+                .ToList();
+
+            if (sdkEntries.Any())
+            {
+                foreach (var kvp in sdkEntries)
+                    kvp.Value.IsDefault = true;
+            }
+            else
+            {
+                Plugins.Add(AoSharpSdkKey, new PluginModel
+                {
+                    Name = "AOSharp.SDK",
+                    PluginType = PluginType.Repo,
+                    RepoUrl = AoSharpSdkRepoUrl,
+                    IsLibrary = true,
+                    AutoUpdate = true,
+                    IsDefault = true
+                });
+            }
+        }
+
+        /// <summary>
+        /// Returns (packageId, dllPath) pairs for all compiled library plugins,
+        /// used by RepoCompiler to substitute NuGet references with local builds.
+        /// </summary>
+        public IEnumerable<(string packageId, string dllPath)> GetCompiledLibraryPaths()
+        {
+            foreach (var kvp in Plugins)
+            {
+                var plugin = kvp.Value;
+                if (plugin.IsLibrary && plugin.IsCompiled)
+                {
+                    yield return (System.IO.Path.GetFileNameWithoutExtension(plugin.Path), plugin.Path);
+                }
+            }
         }
     }
 }

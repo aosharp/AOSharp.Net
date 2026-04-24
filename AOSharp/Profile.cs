@@ -6,7 +6,7 @@ using System.ComponentModel;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using Newtonsoft.Json;
-using AOSharp.Bootstrap.IPC;
+using AOSharp.IPC;
 using AOSharp.Injection;
 using Serilog;
 
@@ -78,7 +78,7 @@ namespace AOSharp
                 {
                     pipe.Connect(2000);
                     Log.Information("[AOSharp] Reconnected to existing bootstrap (no injection).");
-                    pipe.Send(new LoadAssemblyMessage() { Assemblies = plugins });
+                    pipe.Send(new LoadAssemblyMessage() { Assemblies = plugins }.Serialize());
                     pipe.OnDisconnected += (e) =>
                     {
                         _ipcClient = null;
@@ -113,7 +113,7 @@ namespace AOSharp
                 pipe.Send(new LoadAssemblyMessage()
                 {
                     Assemblies = plugins
-                });
+                }.Serialize());
 
                 pipe.OnDisconnected += (e) =>
                 {

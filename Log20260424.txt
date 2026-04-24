@@ -1,0 +1,3 @@
+2026-04-24 14:09:15.369 -05:00 [INF] [UI] Using deployed dist: C:\Users\tagyo\Documents\AOSharpDotNet\Loader\bin\Release\net8.0-windows\ui
+2026-04-24 14:09:16.587 -05:00 [INF] [UI] Navigation succeeded
+2026-04-24 14:09:16.672 -05:00 [WRN] [Bridge] Unknown message type: toast

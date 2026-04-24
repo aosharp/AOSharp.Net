@@ -57,3 +57,7 @@ artifacts/
 # JetBrains Rider
 .idea/
 *.sln.iml
+
+# React UI
+AOSharp.UI/node_modules/
+AOSharp.UI/dist/

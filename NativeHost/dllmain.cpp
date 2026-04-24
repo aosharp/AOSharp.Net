@@ -53,6 +53,22 @@ static void MakePath(wchar_t* out, const wchar_t* name)
     lstrcatW(out, name);
 }
 
+// Build a path inside the Plugins subfolder: base_dir + L"\\Plugins\\" + name → out (MAX_PATH)
+static void MakePluginsPath(wchar_t* out, const wchar_t* name)
+{
+    lstrcpyW(out, g_base_dir);
+    lstrcatW(out, L"\\Plugins\\");
+    lstrcatW(out, name);
+}
+
+// Build a path inside the AOSharp.SDK plugin subfolder: base_dir + L"\\Plugins\\AOSharp.SDK\\" + name → out (MAX_PATH)
+static void MakeSDKPath(wchar_t* out, const wchar_t* name)
+{
+    lstrcpyW(out, g_base_dir);
+    lstrcatW(out, L"\\Plugins\\AOSharp.SDK\\");
+    lstrcatW(out, name);
+}
+
 // ── hostfxr function pointers ────────────────────────────────────────────────
 static hostfxr_initialize_for_runtime_config_fn g_hostfxr_init     = nullptr;
 static hostfxr_get_runtime_delegate_fn          g_hostfxr_delegate  = nullptr;
@@ -140,8 +156,8 @@ static DWORD WINAPI HostThread(LPVOID)
     Log(L"NativeHost starting");
 
     wchar_t assembly_path[MAX_PATH], runtimeconfig[MAX_PATH];
-    MakePath(assembly_path, L"AOSharp.Bootstrap.dll");
-    MakePath(runtimeconfig, L"AOSharp.Bootstrap.runtimeconfig.json");
+    MakeSDKPath(assembly_path, L"AOSharp.Bootstrap.dll");
+    MakeSDKPath(runtimeconfig, L"AOSharp.Bootstrap.runtimeconfig.json");
 
     if (GetFileAttributesW(assembly_path) == INVALID_FILE_ATTRIBUTES)
     {

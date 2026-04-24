@@ -46,7 +46,8 @@
   <PropertyGroup>
     <DotNetHostPackDir>C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Host.win-x86\8.0.24\runtimes\win-x86\native</DotNetHostPackDir>
     <!-- Output directly into the shared bin dir so dotnet build and msbuild agree on location -->
-    <OutDir>$(MSBuildProjectDirectory)\..\bin\$(Configuration)\net8.0-windows\</OutDir>
+    <ManagedConfig Condition="'$(ManagedConfig)'==''">Release</ManagedConfig>
+    <OutDir>$(MSBuildProjectDirectory)\..\bin\$(ManagedConfig)\net8.0-windows\</OutDir>
     <TargetName>NativeHost</TargetName>
     <IntDir>$(MSBuildProjectDirectory)\obj\$(Configuration)\</IntDir>
   </PropertyGroup>

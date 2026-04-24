@@ -11,9 +11,7 @@
     <BaseOutputPath>$(MSBuildProjectDirectory)\..\bin</BaseOutputPath>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="MahApps.Metro" Version="2.4.10" />
-    <PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.77" />
-    <PackageReference Include="ControlzEx" Version="5.0.2" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3912.50" />
     <PackageReference Include="Reloaded.Hooks" Version="4.3.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="Reloaded.Injector" Version="1.2.5" />
@@ -24,10 +22,4 @@
     <PackageReference Include="System.Memory" Version="4.5.5" />
     <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
   </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\..\SDK\AOSharp.Bootstrap\AOSharp.Bootstrap.csproj" />
-    <ProjectReference Include="..\..\SDK\AOSharp.Common\AOSharp.Common.csproj" />
-    <ProjectReference Include="..\..\SDK\AOSharp.Core\AOSharp.Core.csproj" />
-  </ItemGroup>
-
 </Project>
