@@ -123,7 +123,7 @@ export function PluginsGrid() {
               </td>
               <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
                 {plugin.pluginType === 'Repo' ? (
-                  isCompiling && !plugin.isCompiled ? (
+                  isCompiling ? (
                     <div
                       className="spinner"
                       title={compileProgress?.pluginName === plugin.name ? compileProgress.message : 'Queued…'}
