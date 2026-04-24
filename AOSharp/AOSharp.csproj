@@ -7,7 +7,6 @@
     <AssemblyName>AOSharp</AssemblyName>
     <RootNamespace>AOSharp</RootNamespace>
     <LangVersion>latest</LangVersion>
-    <PlatformTarget>x86</PlatformTarget>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <BaseOutputPath>$(MSBuildProjectDirectory)\..\bin</BaseOutputPath>
   </PropertyGroup>
@@ -26,9 +25,9 @@
     <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\AOSharp.Bootstrap\AOSharp.Bootstrap.csproj" />
-    <ProjectReference Include="..\AOSharp.Common\AOSharp.Common.csproj" />
-    <ProjectReference Include="..\AOSharp.Core\AOSharp.Core.csproj" />
+    <ProjectReference Include="..\..\SDK\AOSharp.Bootstrap\AOSharp.Bootstrap.csproj" />
+    <ProjectReference Include="..\..\SDK\AOSharp.Common\AOSharp.Common.csproj" />
+    <ProjectReference Include="..\..\SDK\AOSharp.Core\AOSharp.Core.csproj" />
   </ItemGroup>
 
 </Project>

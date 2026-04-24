@@ -24,7 +24,9 @@ echo MSBuild: !MSBUILD!
 
 :: ── Build managed projects ────────────────────────────────────────────────────
 echo Building managed projects...
-dotnet build AOSharp.sln --configuration Debug
+REM NativeHost is built separately with MSBuild (not in the .sln so dotnet CLI can build).
+
+dotnet build AOSharp.Loader.sln --configuration Debug
 if errorlevel 1 (
   echo Managed build failed.
   exit /b 1
