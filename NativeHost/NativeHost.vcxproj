@@ -42,9 +42,11 @@
   <ImportGroup Label="Shared" />
   <ImportGroup Label="PropertySheets" />
 
-  <!-- .NET 8 x86 host pack – headers and libs -->
+  <!-- .NET 8 x86 host pack – headers and libs.
+       DotNetHostPackDir is passed in by build.bat (auto-detected).
+       The hardcoded path here is a fallback for IDE builds. -->
   <PropertyGroup>
-    <DotNetHostPackDir>C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Host.win-x86\8.0.24\runtimes\win-x86\native</DotNetHostPackDir>
+    <DotNetHostPackDir Condition="'$(DotNetHostPackDir)'==''">C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Host.win-x86\8.0.24\runtimes\win-x86\native</DotNetHostPackDir>
     <!-- Output directly into the shared bin dir so dotnet build and msbuild agree on location -->
     <ManagedConfig Condition="'$(ManagedConfig)'==''">Release</ManagedConfig>
     <OutDir>$(MSBuildProjectDirectory)\..\bin\$(ManagedConfig)\net8.0-windows\</OutDir>

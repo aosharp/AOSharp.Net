@@ -34,9 +34,13 @@ echo Building React UI...
 pushd "%~dp0AOSharp.UI"
 call npm ci --prefer-offline 2>&1
 if errorlevel 1 (
-  echo npm ci failed.
-  popd
-  exit /b 1
+  echo npm ci failed, falling back to npm install...
+  call npm install 2>&1
+  if errorlevel 1 (
+    echo npm install failed.
+    popd
+    exit /b 1
+  )
 )
 call npm run build 2>&1
 if errorlevel 1 (
@@ -55,9 +59,20 @@ if errorlevel 1 (
   exit /b 1
 )
 
+:: ── Locate .NET 8 x86 host pack (nethost.h / libnethost.lib) ──────────────────
+set "HOST_PACK_BASE=C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Host.win-x86"
+set "DOTNET_HOST_PACK_DIR="
+for /d %%d in ("%HOST_PACK_BASE%\8.0.*") do set "DOTNET_HOST_PACK_DIR=%%d\runtimes\win-x86\native"
+if "!DOTNET_HOST_PACK_DIR!"=="" (
+  echo Could not find Microsoft.NETCore.App.Host.win-x86 under %HOST_PACK_BASE%.
+  echo Run: dotnet workload install microsoft-net-runtime-windows
+  exit /b 1
+)
+echo DotNet Host Pack: !DOTNET_HOST_PACK_DIR!
+
 :: ── Build NativeHost (C++ x86) ────────────────────────────────────────────────
 echo Building NativeHost ^(C++ x86^)...
-"!MSBUILD!" NativeHost\NativeHost.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:ManagedConfig=!CONFIG! /v:minimal /nologo
+"!MSBUILD!" NativeHost\NativeHost.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:ManagedConfig=!CONFIG! /p:DotNetHostPackDir="!DOTNET_HOST_PACK_DIR!" /v:minimal /nologo
 if errorlevel 1 (
   echo NativeHost build failed.
   exit /b 1
