@@ -50,6 +50,51 @@ namespace AOSharp.Services
         // ── Git ────────────────────────────────────────────────────────────────
 
         /// <summary>
+        /// Fetches from origin and returns whether an update is available plus both short commit hashes.
+        /// Does not modify the working tree. Returns <c>(false, null, null)</c> if not yet cloned.
+        /// </summary>
+        public (bool hasUpdate, string localCommit, string remoteCommit) CheckForUpdate(string repoUrl)
+        {
+            var localPath = GetLocalRepoPath(repoUrl);
+            if (!Directory.Exists(Path.Combine(localPath, ".git")))
+                return (false, null, null);
+
+            var localHead = RunGitSingleLine(localPath, "rev-parse --short HEAD");
+            if (localHead == null) return (false, null, null);
+
+            // Fetch from remote without touching the working tree
+            RunGit(localPath, "fetch origin");
+
+            var remoteHead = RunGitSingleLine(localPath, "rev-parse --short FETCH_HEAD");
+            if (remoteHead == null) return (false, localHead, null);
+
+            bool hasUpdate = !string.Equals(localHead, remoteHead, StringComparison.OrdinalIgnoreCase);
+            return (hasUpdate, localHead, remoteHead);
+        }
+
+        /// <summary>
+        /// Returns the short commit hash of the local HEAD without network access.
+        /// Returns null if the repo has not been cloned yet.
+        /// </summary>
+        public string GetLocalCommit(string repoUrl)
+        {
+            var localPath = GetLocalRepoPath(repoUrl);
+            if (!Directory.Exists(Path.Combine(localPath, ".git")))
+                return null;
+            return RunGitSingleLine(localPath, "rev-parse --short HEAD");
+        }
+
+        /// <summary>
+        /// Runs a git command and returns the first non-empty output line, or null.
+        /// </summary>
+        private string RunGitSingleLine(string workingDir, string args)
+        {
+            var output = new List<string>();
+            RunProcess("git", args, workingDir, output);
+            return output.FirstOrDefault(l => !string.IsNullOrWhiteSpace(l))?.Trim();
+        }
+
+        /// <summary>
         /// Clones the repo if not present locally, or pulls latest changes if it is.
         /// </summary>
         public bool CloneOrPull(string repoUrl, string localPath)
@@ -364,6 +409,16 @@ namespace AOSharp.Services
                 if (!pulled)
                 {
                     Report(plugin.Name, "Failed to clone/pull.", isError: true);
+                    result.AllSucceeded = false;
+                    return result;
+                }
+            }
+            else if (!Directory.Exists(Path.Combine(localPath, ".git")))
+            {
+                bool cloned = await Task.Run(() => CloneOrPull(plugin.RepoUrl, localPath));
+                if (!cloned)
+                {
+                    Report(plugin.Name, "Failed to clone.", isError: true);
                     result.AllSucceeded = false;
                     return result;
                 }

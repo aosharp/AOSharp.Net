@@ -1,6 +1,6 @@
 import type { Plugin } from '../types';
 import { sendToHost } from '../bridge';
-import { selectActiveProfile, selectPluginsMap, useStore } from '../store';
+import { selectActiveProfile, selectPluginsMap, selectProfiles, useStore } from '../store';
 import { useState } from 'react';
 import '../index.css';
 
@@ -11,8 +11,14 @@ interface ContextMenu {
   plugin: Plugin;
 }
 
+interface PendingUpdate {
+  key: string;
+  plugin: Plugin;
+}
+
 export function PluginsGrid() {
   const activeProfile = useStore(selectActiveProfile);
+  const profiles = useStore(selectProfiles);
   const pluginsMap = useStore(selectPluginsMap);
   const isLoading = useStore((s) => s.isLoading);
   const isCompiling = useStore((s) => s.isCompiling);
@@ -21,11 +27,17 @@ export function PluginsGrid() {
     a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
   );
   const [ctx, setCtx] = useState<ContextMenu | null>(null);
+  const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
 
-  const isEnabled = activeProfile !== null;
+  // Keys of plugins that are enabled on at least one currently-injected profile
+  const injectedPluginKeys = new Set(
+    profiles.filter((p) => p.isInjected).flatMap((p) => p.enabledPlugins)
+  );
+
+  const hasActiveProfile = activeProfile !== null;
 
   function handleToggle(key: string, enabled: boolean) {
-    if (!isEnabled) return;
+    if (!hasActiveProfile) return;
     sendToHost({ type: 'togglePlugin', key, enabled });
   }
 
@@ -36,6 +48,15 @@ export function PluginsGrid() {
 
   function closeCtx() {
     setCtx(null);
+  }
+
+  function handleUpdateClick(key: string, plugin: Plugin) {
+    closeCtx();
+    if (plugin.trustedRepo) {
+      sendToHost({ type: 'updatePlugin', key });
+    } else {
+      setPendingUpdate({ key, plugin });
+    }
   }
 
   const thStyle: React.CSSProperties = {
@@ -76,15 +97,13 @@ export function PluginsGrid() {
         style={{
           width: '100%',
           borderCollapse: 'collapse',
-          opacity: isEnabled ? 1 : 0.45,
-          pointerEvents: isEnabled ? 'auto' : 'none',
         }}
       >
         <thead>
           <tr>
             <th style={{ ...thStyle, width: 60 }}>Enabled</th>
             <th style={{ ...thStyle, width: 160 }}>Name</th>
-            <th style={{ ...thStyle, width: 80 }}>Version</th>
+            <th style={{ ...thStyle, width: 110 }}>Version</th>
             <th style={{ ...thStyle, width: 60 }}>Source</th>
             <th style={{ ...thStyle, width: 65 }}>Type</th>
             <th style={{ ...thStyle, width: 65 }}>Compiled</th>
@@ -108,13 +127,50 @@ export function PluginsGrid() {
                 <input
                   type="checkbox"
                   checked={plugin.isEnabled}
-                  disabled={plugin.isLibrary}
+                  disabled={plugin.isLibrary || !hasActiveProfile}
+                  title={!hasActiveProfile ? 'Select a profile to enable/disable plugins' : undefined}
                   onChange={(e) => handleToggle(key, e.target.checked)}
-                  style={{ cursor: plugin.isLibrary ? 'default' : 'pointer' }}
+                  style={{ cursor: (plugin.isLibrary || !hasActiveProfile) ? 'default' : 'pointer' }}
                 />
               </td>
-              <td style={tdStyle(plugin)}>{plugin.name}</td>
-              <td style={tdStyle(plugin)}>{plugin.version ?? ''}</td>
+              <td style={{ ...tdStyle(plugin), display: 'flex', alignItems: 'center', gap: 6, maxWidth: 'unset', width: 160 }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
+                  {plugin.name}
+                </span>
+                {plugin.pluginType === 'Repo' && plugin.hasUpdate && (
+                  <span
+                    title="Update available — right-click to update"
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 700,
+                      color: '#f0c060',
+                      border: '1px solid #a06020',
+                      borderRadius: 3,
+                      padding: '1px 4px',
+                      flexShrink: 0,
+                      cursor: 'default',
+                    }}
+                  >
+                    UPDATE
+                  </span>
+                )}
+              </td>
+              <td style={tdStyle(plugin)}>
+                {plugin.pluginType === 'Repo' ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    <span style={{ fontFamily: 'monospace', color: 'var(--color-text-muted)' }}>
+                      {plugin.localCommit ?? '—'}
+                    </span>
+                    {plugin.remoteCommit && plugin.remoteCommit !== plugin.localCommit && (
+                      <span style={{ fontFamily: 'monospace', color: '#f0c060', fontSize: 11 }}>
+                        ↑ {plugin.remoteCommit}
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  plugin.version ?? ''
+                )}
+              </td>
               <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
                 {plugin.pluginType === 'Repo' ? 'Repo' : 'Disk'}
               </td>
@@ -123,10 +179,10 @@ export function PluginsGrid() {
               </td>
               <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
                 {plugin.pluginType === 'Repo' ? (
-                  isCompiling ? (
+                  isCompiling && compileProgress?.pluginName === plugin.name ? (
                     <div
                       className="spinner"
-                      title={compileProgress?.pluginName === plugin.name ? compileProgress.message : 'Queued…'}
+                      title={compileProgress.message}
                       style={{ width: 12, height: 12, borderWidth: 2, display: 'inline-block' }}
                     />
                   ) : (
@@ -144,6 +200,7 @@ export function PluginsGrid() {
         </tbody>
       </table>
 
+      {/* Context menu */}
       {ctx && (
         <div
           style={{
@@ -154,11 +211,28 @@ export function PluginsGrid() {
             border: '1px solid var(--color-border)',
             borderRadius: 4,
             zIndex: 1000,
-            minWidth: 120,
+            minWidth: 160,
             boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
           }}
           onClick={(e) => e.stopPropagation()}
         >
+          {ctx.plugin.pluginType === 'Repo' && ctx.plugin.hasUpdate && (() => {
+            const blocked = injectedPluginKeys.has(ctx.pluginKey);
+            return (
+              <button
+                onClick={() => !blocked && handleUpdateClick(ctx.pluginKey, ctx.plugin)}
+                title={blocked ? 'Eject before updating' : undefined}
+                style={{
+                  ...menuItemStyle,
+                  color: blocked ? 'var(--color-text-muted)' : '#f0c060',
+                  cursor: blocked ? 'not-allowed' : 'pointer',
+                  opacity: blocked ? 0.5 : 1,
+                }}
+              >
+                ↑ Update Available{blocked ? ' 🔒' : ''}
+              </button>
+            );
+          })()}
           {ctx.plugin.pluginType === 'Repo' && (
             <button
               onClick={() => {
@@ -170,17 +244,118 @@ export function PluginsGrid() {
               Compile
             </button>
           )}
-          {!ctx.plugin.isDefault && (
-            <button
-              onClick={() => {
-                sendToHost({ type: 'removePlugin', key: ctx.pluginKey });
-                closeCtx();
-              }}
-              style={{ ...menuItemStyle, color: 'var(--color-red)' }}
-            >
-              Remove
-            </button>
+          {ctx.plugin.pluginType === 'Repo' && (
+            <>
+              <div style={{ height: 1, background: 'var(--color-border)', margin: '3px 0' }} />
+              <button
+                onClick={() => {
+                  sendToHost({ type: 'setTrustedRepo', key: ctx.pluginKey, trusted: !ctx.plugin.trustedRepo });
+                  closeCtx();
+                }}
+                style={{ ...menuItemStyle, fontSize: 12, color: ctx.plugin.trustedRepo ? 'var(--color-text-muted)' : 'var(--color-text)' }}
+              >
+                {ctx.plugin.trustedRepo ? '✓ Trusted — click to untrust' : 'Trust this Repo'}
+              </button>
+            </>
           )}
+          {!ctx.plugin.isDefault && (() => {
+            const blocked = injectedPluginKeys.has(ctx.pluginKey);
+            return (
+              <>
+                <div style={{ height: 1, background: 'var(--color-border)', margin: '3px 0' }} />
+                <button
+                  onClick={() => {
+                    if (blocked) return;
+                    sendToHost({ type: 'removePlugin', key: ctx.pluginKey });
+                    closeCtx();
+                  }}
+                  title={blocked ? 'Eject before removing' : undefined}
+                  style={{
+                    ...menuItemStyle,
+                    color: blocked ? 'var(--color-text-muted)' : 'var(--color-red)',
+                    cursor: blocked ? 'not-allowed' : 'pointer',
+                    opacity: blocked ? 0.5 : 1,
+                  }}
+                >
+                  Remove{blocked ? ' 🔒' : ''}
+                </button>
+              </>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Update confirmation modal for untrusted repos */}
+      {pendingUpdate && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.65)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1100,
+          }}
+          onClick={() => setPendingUpdate(null)}
+        >
+          <div
+            style={{
+              background: 'var(--color-surface)',
+              border: '1px solid var(--color-border)',
+              borderRadius: 6,
+              padding: '20px 24px',
+              maxWidth: 440,
+              width: '90%',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#f0c060' }}>
+              ⚠ Confirm Update: {pendingUpdate.plugin.name}
+            </h4>
+            <p style={{ margin: '0 0 8px', fontSize: 13, color: 'var(--color-text-muted)', wordBreak: 'break-all' }}>
+              {pendingUpdate.plugin.repoUrl}
+            </p>
+            <p style={{ margin: '0 0 16px', fontSize: 13, lineHeight: 1.5 }}>
+              Pulling an update will download and compile new code from this repository.
+              Malicious updates can compromise your system.
+              Only proceed if you have reviewed the incoming changes and confirmed they are safe.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => {
+                  sendToHost({ type: 'updatePlugin', key: pendingUpdate.key });
+                  setPendingUpdate(null);
+                }}
+                style={{
+                  background: '#3d2a0a',
+                  border: '1px solid #a06020',
+                  borderRadius: 4,
+                  color: '#f0c060',
+                  padding: '6px 14px',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                }}
+              >
+                I have verified — Update
+              </button>
+              <button
+                onClick={() => setPendingUpdate(null)}
+                style={{
+                  background: 'var(--color-surface-hover)',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 4,
+                  color: 'var(--color-text)',
+                  padding: '6px 14px',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

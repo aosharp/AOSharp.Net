@@ -11,10 +11,14 @@ import { Toaster } from './components/Toaster';
 export default function App() {
   const [showAddPlugin, setShowAddPlugin] = useState(false);
   const [showTweaks, setShowTweaks] = useState(false);
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
 
   const activeProfile = useStore(selectActiveProfile);
   const isCompiling = useStore((s) => s.isCompiling);
   const compileProgress = useStore((s) => s.compileProgress);
+  const hasUncompiled = useStore((s) =>
+    Object.values(s.plugins).some((p) => p.pluginType === 'Repo' && !p.isCompiled)
+  );
 
   useEffect(() => {
     initBridge();
@@ -28,6 +32,14 @@ export default function App() {
 
   function handleCompileAll() {
     sendToHost({ type: 'compileAll' });
+  }
+
+  function handleCheckUpdates() {
+    if (isCheckingUpdates) return;
+    setIsCheckingUpdates(true);
+    sendToHost({ type: 'checkUpdates' });
+    // Spin the icon for a few seconds — the backend will push new state when done
+    setTimeout(() => setIsCheckingUpdates(false), 3000);
   }
 
   return (
@@ -45,6 +57,13 @@ export default function App() {
           flexShrink: 0,
         }}
       >
+        <button
+          onClick={() => setShowTweaks(true)}
+          title="Tweaks"
+          style={iconBtnStyle}
+        >
+          ⚙
+        </button>
         <div style={{ flex: 1 }} />
         {activeProfile && (
           <button
@@ -59,27 +78,60 @@ export default function App() {
             {isInjected ? 'Eject' : 'Inject'}
           </button>
         )}
-        <button
-          onClick={handleCompileAll}
-          disabled={isCompiling}
-          style={{ ...toolbarBtnStyle, minWidth: 120, opacity: isCompiling ? 0.6 : 1 }}
-        >
-          {isCompiling
-            ? `Compiling${compileProgress ? `: ${compileProgress.pluginName}` : '...'}`
-            : 'Compile Plugins'}
-        </button>
+        {(hasUncompiled || isCompiling) && (
+          <button
+            onClick={handleCompileAll}
+            disabled={isCompiling}
+            title={isCompiling ? `Compiling${compileProgress ? `: ${compileProgress.pluginName}` : '...'}` : undefined}
+            style={{
+              ...toolbarBtnStyle,
+              opacity: isCompiling ? 0.5 : 1,
+              color: 'var(--color-text-muted)',
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: '0.04em',
+            }}
+          >
+            {isCompiling
+              ? `Compiling${compileProgress ? `: ${compileProgress.pluginName}` : '...'}`
+              : 'Compile All'}
+          </button>
+        )}
         <button
           onClick={() => setShowAddPlugin(true)}
-          style={{ ...toolbarBtnStyle, minWidth: 100 }}
+          style={{
+            ...toolbarBtnStyle,
+            color: 'var(--color-text-muted)',
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: '0.04em',
+          }}
         >
-          Add Plugin
+          Install Plugin
         </button>
         <button
-          onClick={() => setShowTweaks(true)}
-          title="Tweaks"
-          style={iconBtnStyle}
+          onClick={handleCheckUpdates}
+          disabled={isCheckingUpdates}
+          title="Check for updates"
+          style={{
+            ...iconBtnStyle,
+            fontSize: 15,
+            opacity: isCheckingUpdates ? 0.5 : 1,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 26,
+            height: 26,
+          }}
         >
-          ⚙
+          <span
+            style={{
+              display: 'inline-block',
+              animation: isCheckingUpdates ? 'spin 1s linear infinite' : 'none',
+            }}
+          >
+            ↻
+          </span>
         </button>
       </div>
 

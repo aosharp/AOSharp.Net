@@ -19,6 +19,10 @@ export interface Plugin {
   isDefault: boolean;
   isCompiled: boolean;
   isEnabled: boolean;
+  hasUpdate: boolean;
+  trustedRepo: boolean;
+  localCommit: string | null;
+  remoteCommit: string | null;
 }
 
 export interface Profile {
@@ -54,6 +58,9 @@ export type OutboundMessage =
   | { type: 'eject' }
   | { type: 'compileAll' }
   | { type: 'compilePlugin'; key: string }
+  | { type: 'updatePlugin'; key: string }
+  | { type: 'checkUpdates' }
+  | { type: 'setTrustedRepo'; key: string; trusted: boolean }
   | { type: 'addDllPlugin'; path: string }
   | { type: 'addRepoPlugin'; url: string; projectFilePath: string }
   | { type: 'removePlugin'; key: string }

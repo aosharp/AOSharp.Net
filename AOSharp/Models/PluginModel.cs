@@ -46,6 +46,29 @@ namespace AOSharp
         public bool AutoUpdate { get; set; }
 
         /// <summary>
+        /// When true the user has confirmed they trust this repo and update confirmations are skipped.
+        /// </summary>
+        public bool TrustedRepo { get; set; }
+
+        /// <summary>
+        /// Runtime flag set by the background update checker. Not persisted.
+        /// </summary>
+        [JsonIgnore]
+        public bool HasUpdate { get; set; }
+
+        /// <summary>
+        /// Short commit hash of the currently checked-out local clone. Runtime only.
+        /// </summary>
+        [JsonIgnore]
+        public string LocalCommit { get; set; }
+
+        /// <summary>
+        /// Short commit hash of the remote HEAD (populated after git fetch). Runtime only.
+        /// </summary>
+        [JsonIgnore]
+        public string RemoteCommit { get; set; }
+
+        /// <summary>
         /// Libraries are compiled and referenced but never injected into the game process.
         /// </summary>
         public bool IsLibrary { get; set; }

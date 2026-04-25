@@ -109,6 +109,30 @@ export function AddPluginDialog({ onClose }: Props) {
           <TabBtn active={tab === 'repo'} onClick={() => { setTab('repo'); }}>Repository URL</TabBtn>
         </div>
 
+        {/* Security warning — always shown on repo tab */}
+        {tab === 'repo' && (
+          <div style={{
+            background: '#2a1f0a',
+            border: '1px solid #7a4f10',
+            borderRadius: 4,
+            padding: '8px 12px',
+            fontSize: 12,
+            color: '#d4944a',
+            marginBottom: 14,
+            display: 'flex',
+            gap: 8,
+            alignItems: 'flex-start',
+            lineHeight: 1.5,
+          }}>
+            <span style={{ flexShrink: 0, fontSize: 13 }}>⚠</span>
+            <span>
+              Repository plugins execute arbitrary code on your machine.
+              Only add repositories from sources you personally trust.
+              Malicious repos can steal credentials or cause other harm.
+            </span>
+          </div>
+        )}
+
         {/* DLL tab */}
         {tab === 'dll' && (
           <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>

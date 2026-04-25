@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Timers;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
@@ -32,6 +33,7 @@ namespace AOSharp
 
         private Profile _activeProfile;
         private bool _isCompiling;
+        private Timer _updateCheckTimer;
 
         public WebMessageBridge(
             Microsoft.Web.WebView2.Wpf.WebView2 webView,
@@ -57,6 +59,16 @@ namespace AOSharp
                 _config.Save();
                 SendState();
             };
+
+            // Background update checks: initial after 30 s, then every 5 min
+            _updateCheckTimer = new Timer(TimeSpan.FromMinutes(5).TotalMilliseconds);
+            _updateCheckTimer.Elapsed += async (_, _) => await HandleCheckUpdatesAsync();
+            _updateCheckTimer.AutoReset = true;
+            _updateCheckTimer.Start();
+            _ = Task.Delay(TimeSpan.FromSeconds(30)).ContinueWith(_ => HandleCheckUpdatesAsync());
+
+            // Populate local commit hashes immediately (no network) so Version column is populated on first open
+            _ = Task.Run(() => InitializeLocalCommits());
         }
 
         // ── Inbound (React → C#) ────────────────────────────────────────────
@@ -109,6 +121,18 @@ namespace AOSharp
 
                     case "compilePlugin":
                         await HandleCompilePluginAsync(msg.Key);
+                        break;
+
+                    case "updatePlugin":
+                        await HandleUpdatePluginAsync(msg.Key);
+                        break;
+
+                    case "checkUpdates":
+                        await HandleCheckUpdatesAsync();
+                        break;
+
+                    case "setTrustedRepo":
+                        HandleSetTrustedRepo(msg.Key, msg.Trusted);
                         break;
 
                     case "addDllPlugin":
@@ -214,7 +238,7 @@ namespace AOSharp
             {
                 var result = await _repoCompiler.CompileAll(
                     _config.Plugins.ToList(),
-                    pullFirst: true,
+                    pullFirst: false,
                     onGroupComplete: partial => _dispatcher.Invoke(() => ApplyCompileResult(partial)));
 
                 if (result.AllSucceeded)
@@ -236,7 +260,7 @@ namespace AOSharp
             try
             {
                 var result = await _repoCompiler.CompileOne(
-                    key, plugin, _config.GetCompiledLibraryPaths(), pullFirst: true);
+                    key, plugin, _config.GetCompiledLibraryPaths(), pullFirst: false);
 
                 ApplyCompileResult(result);
 
@@ -251,8 +275,130 @@ namespace AOSharp
             }
         }
 
-        private void HandleAddDllPlugin(string path)
+        /// <summary>
+        /// Explicitly pulls and recompiles a single repo plugin.
+        /// This is the only path that pulls new code from the remote.
+        /// </summary>
+        private async Task HandleUpdatePluginAsync(string key)
         {
+            if (key == null || !_config.Plugins.TryGetValue(key, out var plugin)) return;
+            if (_isCompiling) return;
+
+            _isCompiling = true;
+            SendState();
+
+            try
+            {
+                var result = await _repoCompiler.CompileOne(
+                    key, plugin, _config.GetCompiledLibraryPaths(), pullFirst: true);
+
+                _dispatcher.Invoke(() => ApplyCompileResult(result));
+
+                if (result.AllSucceeded)
+                {
+                    // Refresh local commit hash and clear the update flag for all plugins sharing this repo
+                    var newCommit = _repoCompiler.GetLocalCommit(plugin.RepoUrl);
+                    foreach (var p in _config.Plugins.Values.Where(p => p.RepoUrl == plugin.RepoUrl))
+                    {
+                        p.HasUpdate = false;
+                        p.LocalCommit = newCommit;
+                        p.RemoteCommit = newCommit;
+                    }
+
+                    SendToast("info", "Update Plugin", $"{plugin.Name} updated and compiled successfully.");
+                }
+                else
+                {
+                    SendToast("error", "Update Plugin", $"{plugin.Name} update failed. Check Log.txt.");
+                }
+            }
+            catch (Exception ex)
+            {
+                SendToast("error", "Update Plugin", ex.Message);
+            }
+            finally
+            {
+                _isCompiling = false;
+                SendState();
+            }
+        }
+
+        /// <summary>
+        /// Runs <c>git fetch</c> for every cloned repo and updates the HasUpdate flag
+        /// without modifying any working tree. State is pushed if any flags changed.
+        /// </summary>
+        private async Task HandleCheckUpdatesAsync()
+        {
+            var repoUrls = _config.Plugins.Values
+                .Where(p => p.PluginType == PluginType.Repo && !string.IsNullOrEmpty(p.RepoUrl))
+                .Select(p => p.RepoUrl)
+                .Distinct()
+                .ToList();
+
+            bool anyChanged = false;
+
+            foreach (var url in repoUrls)
+            {
+                var localPath = RepoCompiler.GetLocalRepoPath(url);
+                if (!Directory.Exists(Path.Combine(localPath, ".git")))
+                    continue; // Not yet cloned — nothing to check
+
+                var (hasUpdate, localCommit, remoteCommit) = await Task.Run(() => _repoCompiler.CheckForUpdate(url));
+
+                foreach (var p in _config.Plugins.Values.Where(p => p.RepoUrl == url))
+                {
+                    if (p.HasUpdate != hasUpdate || p.LocalCommit != localCommit || p.RemoteCommit != remoteCommit)
+                    {
+                        p.HasUpdate = hasUpdate;
+                        p.LocalCommit = localCommit;
+                        p.RemoteCommit = remoteCommit;
+                        anyChanged = true;
+                    }
+                }
+            }
+
+            if (anyChanged)
+                _dispatcher.BeginInvoke(SendState);
+        }
+
+        private void HandleSetTrustedRepo(string key, bool trusted)
+        {
+            if (key == null || !_config.Plugins.TryGetValue(key, out var plugin)) return;
+            plugin.TrustedRepo = trusted;
+            _config.Save();
+            SendState();
+        }
+
+        /// <summary>
+        /// Reads local HEAD hashes for all already-cloned repos without any network access.
+        /// Called once at startup so the Version column is populated immediately.
+        /// </summary>
+        private void InitializeLocalCommits()
+        {
+            bool anyChanged = false;
+
+            var repoUrls = _config.Plugins.Values
+                .Where(p => p.PluginType == PluginType.Repo && !string.IsNullOrEmpty(p.RepoUrl))
+                .Select(p => p.RepoUrl)
+                .Distinct();
+
+            foreach (var url in repoUrls)
+            {
+                var commit = _repoCompiler.GetLocalCommit(url);
+                if (commit == null) continue;
+
+                foreach (var p in _config.Plugins.Values.Where(p => p.RepoUrl == url))
+                {
+                    p.LocalCommit = commit;
+                    anyChanged = true;
+                }
+            }
+
+            if (anyChanged)
+                _dispatcher.BeginInvoke(SendState);
+        }
+
+        private void HandleAddDllPlugin(string path)        {
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
 
             if (path.Contains(@"\obj\"))
@@ -423,7 +569,11 @@ namespace AOSharp
                         isLibrary = kvp.Value.IsLibrary,
                         isDefault = kvp.Value.IsDefault,
                         isCompiled = kvp.Value.IsCompiled,
-                        isEnabled = kvp.Value.IsEnabled
+                        isEnabled = kvp.Value.IsEnabled,
+                        hasUpdate = kvp.Value.HasUpdate,
+                        trustedRepo = kvp.Value.TrustedRepo,
+                        localCommit = kvp.Value.LocalCommit,
+                        remoteCommit = kvp.Value.RemoteCommit
                     });
 
                 var state = new
@@ -522,6 +672,7 @@ namespace AOSharp
             [JsonProperty("isLibrary")] public bool IsLibrary { get; set; }
             [JsonProperty("projectFilePath")] public string ProjectFilePath { get; set; }
             [JsonProperty("enabled")] public bool Enabled { get; set; }
+            [JsonProperty("trusted")] public bool Trusted { get; set; }
             [JsonProperty("installDir")] public string InstallDir { get; set; }
             // Error reporting from React window.onerror / ErrorBoundary
             [JsonProperty("level")] public string Level { get; set; }
