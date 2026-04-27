@@ -112,8 +112,6 @@ See `Example\HelloWorldPlugin\Main.cs` in this repo (sibling of `Loader`) for a 
 - [aosharp.bots](https://gitlab.com/never-knows-best/aosharp.bots) — bot plugins maintained by the author
 - [aosharp-automation](https://gitlab.com/never-knows-best/aosharp-automation) — automation plugins
 
-> **Note:** The API is still evolving and syntax may change as the project expands.
-
 ---
 
 ## Community
