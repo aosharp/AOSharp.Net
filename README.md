@@ -38,9 +38,9 @@ Download the latest Windows release archive from the project's releases page, ex
 1. Start **`AOSharp.exe`** (from the extracted release folder, or from `bin\Release\net8.0-windows\` after a Release build—see **Build**).
 2. Add your plugin DLLs and organize them into a profile.
 3. Launch Anarchy Online and log in.
-4. Select your profile and click **Inject**.
+4. Install plugins from Official or Community sources.
+5. Select your profile and click **Inject**.
 
-To unload, click **Eject** — plugins are cleanly removed without restarting the game.
 
 ---
 
@@ -51,7 +51,7 @@ Use this when you are compiling the **launcher** from this repository instead of
 ### What you need
 
 - Windows 10 or later
-- **Visual Studio 2022** (or Build Tools) with **MSBuild** and **Desktop development with C++** so the Win32 native host can compile
+- **Visual Studio 2022** (or Build Tools) with **MSBuild** and **Desktop development with C++**
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8) (the build resolves the x86 app host pack from your install; see `NativeHost\ResolveDotNetHostPack.ps1` if that fails)
 - **Node.js** (LTS) and npm — used to build the React UI under `AOSharp.UI`
 
