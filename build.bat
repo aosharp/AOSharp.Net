@@ -19,7 +19,7 @@ if not exist "%VSWHERE%" (
 
 :: ── Locate MSBuild (write to temp file to avoid for/f quoting issues) ─────────
 set "TMPOUT=%TEMP%\msbuild_path.tmp"
-"%VSWHERE%" -latest -products * -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" > "%TMPOUT%" 2>nul
+"%VSWHERE%" -latest -products * -prerelease -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" > "%TMPOUT%" 2>nul
 set "MSBUILD="
 for /f "usebackq tokens=*" %%i in ("%TMPOUT%") do set "MSBUILD=%%i"
 del "%TMPOUT%" 2>nul
