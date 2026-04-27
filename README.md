@@ -19,24 +19,23 @@ AOSharp gives you a clean API to interact with the game from C# code. With it yo
 
 ---
 
-## Getting Started
+## Usage
 
-### Requirements
+Use these steps when you already have a built launcher (from a **release package** or from **Build** below).
+
+### What you need
 
 - Windows 10 or later
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8)
-- Visual Studio 2022 (or the `dotnet` CLI)
+- [.NET 8](https://dotnet.microsoft.com/download/dotnet/8) installed (runtime is enough to run the launcher; use the same major version the release targets)
 - Anarchy Online client
 
-### Build
+### From a release
 
-```bat
-build.bat
-```
+Download the latest Windows release archive from the project's releases page, extract it, and run `AOSharp.exe` from the extracted folder. The release notes list prerequisites and anything else you need for that build.
 
-### Inject
+### Run the launcher and inject
 
-1. Open the **AOSharp launcher** (`AOSharp.exe`).
+1. Start **`AOSharp.exe`** (from the extracted release folder, or from `bin\Release\net8.0-windows\` after a Release build—see **Build**).
 2. Add your plugin DLLs and organize them into a profile.
 3. Launch Anarchy Online and log in.
 4. Select your profile and click **Inject**.
@@ -45,9 +44,40 @@ To unload, click **Eject** — plugins are cleanly removed without restarting th
 
 ---
 
+## Build
+
+Use this when you are compiling the **launcher** from this repository instead of using a prebuilt release.
+
+### What you need
+
+- Windows 10 or later
+- **Visual Studio 2022** (or Build Tools) with **MSBuild** and **Desktop development with C++** so the Win32 native host can compile
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8) (the build resolves the x86 app host pack from your install; see `NativeHost\ResolveDotNetHostPack.ps1` if that fails)
+- **Node.js** (LTS) and npm — used to build the React UI under `AOSharp.UI`
+
+### Commands
+
+From the `Loader` directory:
+
+```bat
+build.bat
+```
+
+For a Debug configuration:
+
+```bat
+build.bat --debug
+```
+
+### Output
+
+Artifacts go under `Loader\bin\<Configuration>\net8.0-windows\`, including `AOSharp.exe`, the native host, managed assemblies, and a `ui\` folder produced from the React build.
+
+---
+
 ## Writing a Plugin
 
-Create a new class library project, reference `AOSharp.Core`, and implement `AOPluginEntry`:
+You need the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8) to compile plugins. Create a class library project, reference `AOSharp.Core`, and implement `AOPluginEntry`:
 
 ```csharp
 using AOSharp.Core;
@@ -73,7 +103,7 @@ public class MyPlugin : AOPluginEntry
 
 Your plugin's logs and settings are automatically stored at `%LocalAppData%\AOSharp\<PluginName>\`.
 
-See `TestPlugin\Main.cs` for a complete example covering commands, UI, inventory, networking, and more.
+See `Example\HelloWorldPlugin\Main.cs` in this repo (sibling of `Loader`) for a small starter plugin. Larger examples also live in the related community repos below.
 
 ---
 
