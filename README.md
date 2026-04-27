@@ -52,8 +52,8 @@ Use this when you are compiling the **launcher** from this repository instead of
 
 - Windows 10 or later
 - **Visual Studio 2022** (or Build Tools) with **MSBuild** and **Desktop development with C++**
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8) (the build resolves the x86 app host pack from your install; see `NativeHost\ResolveDotNetHostPack.ps1` if that fails)
-- **Node.js** (LTS) and npm — used to build the React UI under `AOSharp.UI`
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8)
+- **Node.js** (LTS) and npm
 
 ### Commands
 
