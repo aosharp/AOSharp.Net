@@ -43,10 +43,10 @@
   <ImportGroup Label="PropertySheets" />
 
   <!-- .NET 8 x86 host pack – headers and libs.
-       DotNetHostPackDir is passed in by build.bat (auto-detected).
-       The hardcoded path here is a fallback for IDE builds. -->
+       build.bat (or the command line) can pass /p:DotNetHostPackDir=...
+       If unset, the ResolveDotNetHostPackDir target runs ResolveDotNetHostPack.ps1 to pick
+       the newest 8.0.x host pack (any installed patch, e.g. 8.0.11 or 8.0.24). -->
   <PropertyGroup>
-    <DotNetHostPackDir Condition="'$(DotNetHostPackDir)'==''">C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Host.win-x86\8.0.24\runtimes\win-x86\native</DotNetHostPackDir>
     <!-- Output directly into the shared bin dir so dotnet build and msbuild agree on location -->
     <ManagedConfig Condition="'$(ManagedConfig)'==''">Release</ManagedConfig>
     <OutDir>$(MSBuildProjectDirectory)\..\bin\$(ManagedConfig)\net8.0-windows\</OutDir>
@@ -103,5 +103,21 @@
   </ItemGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+
+  <Target Name="ResolveDotNetHostPackDir" BeforeTargets="ClCompile" Condition="'$(DotNetHostPackDir)'==''">
+    <Exec
+      Command="powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)ResolveDotNetHostPack.ps1&quot;"
+      ConsoleToMSBuild="true"
+      StandardOutputImportance="low"
+      StandardErrorImportance="high">
+      <Output TaskParameter="ConsoleOutput" ItemName="DotNetHostPackFromExec" />
+    </Exec>
+    <PropertyGroup>
+      <DotNetHostPackDir>@(DotNetHostPackFromExec)</DotNetHostPackDir>
+    </PropertyGroup>
+    <Error
+      Text="NativeHost: could not resolve .NET 8 x86 app host (nethost) path. Install the .NET 8 SDK, or set environment variable DOTNET_ROOT, or pass /p:DotNetHostPackDir=... to MSBuild. See NativeHost/ResolveDotNetHostPack.ps1."
+      Condition="'$(DotNetHostPackDir)'==''" />
+  </Target>
 
 </Project>

@@ -59,13 +59,12 @@ if errorlevel 1 (
   exit /b 1
 )
 
-:: ── Locate .NET 8 x86 host pack (nethost.h / libnethost.lib) ──────────────────
-set "HOST_PACK_BASE=C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Host.win-x86"
+:: ── Locate .NET 8 x86 host pack (nethost.h / libnethost.lib) — same as NativeHost.vcxproj
 set "DOTNET_HOST_PACK_DIR="
-for /d %%d in ("%HOST_PACK_BASE%\8.0.*") do set "DOTNET_HOST_PACK_DIR=%%d\runtimes\win-x86\native"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0NativeHost\ResolveDotNetHostPack.ps1"`) do set "DOTNET_HOST_PACK_DIR=%%i"
 if "!DOTNET_HOST_PACK_DIR!"=="" (
-  echo Could not find Microsoft.NETCore.App.Host.win-x86 under %HOST_PACK_BASE%.
-  echo Run: dotnet workload install microsoft-net-runtime-windows
+  echo Could not resolve the .NET 8 x86 app host. Install the .NET 8 SDK, or set DOTNET_ROOT.
+  echo See NativeHost\ResolveDotNetHostPack.ps1.
   exit /b 1
 )
 echo DotNet Host Pack: !DOTNET_HOST_PACK_DIR!
