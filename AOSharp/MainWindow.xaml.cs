@@ -2,6 +2,7 @@
 using System.IO;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
+using Microsoft.Win32;
 using AOSharp.Data;
 using AOSharp.Models;
 using AOSharp.Services;
@@ -26,7 +27,28 @@ namespace AOSharp
 
             InitializeComponent();
 
+            SourceInitialized += OnSourceInitialized;
+            Closed += OnClosed;
+            SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
             Loaded += OnLoaded;
+        }
+
+        private void OnSourceInitialized(object sender, EventArgs e)
+        {
+            WindowsTitleBarTheme.ApplyToWindow(this);
+        }
+
+        private void OnClosed(object sender, EventArgs e)
+        {
+            SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+        }
+
+        private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+        {
+            if (e.Category is UserPreferenceCategory.Color or UserPreferenceCategory.VisualStyle)
+            {
+                Dispatcher.BeginInvoke(new Action(() => WindowsTitleBarTheme.ApplyToWindow(this)));
+            }
         }
 
         private async void OnLoaded(object sender, RoutedEventArgs e)

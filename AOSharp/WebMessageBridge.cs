@@ -124,15 +124,11 @@ namespace AOSharp
                         break;
 
                     case "updatePlugin":
-                        await HandleUpdatePluginAsync(msg.Key);
+                        await HandleUpdatePluginAsync(msg.Key, msg.TrustRepo);
                         break;
 
                     case "checkUpdates":
                         await HandleCheckUpdatesAsync();
-                        break;
-
-                    case "setTrustedRepo":
-                        HandleSetTrustedRepo(msg.Key, msg.Trusted);
                         break;
 
                     case "addDllPlugin":
@@ -149,6 +145,10 @@ namespace AOSharp
 
                     case "removePlugin":
                         HandleRemovePlugin(msg.Key);
+                        break;
+
+                    case "openUrl":
+                        _dispatcher.Invoke(() => HandleOpenUrl(msg.Url));
                         break;
 
                     case "togglePlugin":
@@ -189,6 +189,27 @@ namespace AOSharp
         }
 
         // ── Action handlers ──────────────────────────────────────────────────
+
+        private void HandleOpenUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+                return;
+            if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out Uri uri) ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            {
+                Log.Warning("[Bridge] openUrl rejected (only http/https allowed)");
+                return;
+            }
+            try
+            {
+                Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"[Bridge] openUrl failed: {ex.Message}");
+                SendToast("error", "Could not open link", ex.Message);
+            }
+        }
 
         private async Task HandleInjectAsync()
         {
@@ -279,10 +300,16 @@ namespace AOSharp
         /// Explicitly pulls and recompiles a single repo plugin.
         /// This is the only path that pulls new code from the remote.
         /// </summary>
-        private async Task HandleUpdatePluginAsync(string key)
+        private async Task HandleUpdatePluginAsync(string key, bool trustRepo = false)
         {
             if (key == null || !_config.Plugins.TryGetValue(key, out var plugin)) return;
             if (_isCompiling) return;
+
+            if (trustRepo)
+            {
+                plugin.TrustedRepo = true;
+                _config.Save();
+            }
 
             _isCompiling = true;
             SendState();
@@ -359,14 +386,6 @@ namespace AOSharp
 
             if (anyChanged)
                 _dispatcher.BeginInvoke(SendState);
-        }
-
-        private void HandleSetTrustedRepo(string key, bool trusted)
-        {
-            if (key == null || !_config.Plugins.TryGetValue(key, out var plugin)) return;
-            plugin.TrustedRepo = trusted;
-            _config.Save();
-            SendState();
         }
 
         /// <summary>
@@ -667,12 +686,12 @@ namespace AOSharp
             [JsonProperty("type")] public string Type { get; set; }
             [JsonProperty("profileId")] public string ProfileId { get; set; }
             [JsonProperty("key")] public string Key { get; set; }
+            [JsonProperty("trustRepo")] public bool TrustRepo { get; set; }
             [JsonProperty("path")] public string Path { get; set; }
             [JsonProperty("url")] public string Url { get; set; }
             [JsonProperty("isLibrary")] public bool IsLibrary { get; set; }
             [JsonProperty("projectFilePath")] public string ProjectFilePath { get; set; }
             [JsonProperty("enabled")] public bool Enabled { get; set; }
-            [JsonProperty("trusted")] public bool Trusted { get; set; }
             [JsonProperty("installDir")] public string InstallDir { get; set; }
             // Error reporting from React window.onerror / ErrorBoundary
             [JsonProperty("level")] public string Level { get; set; }

@@ -58,12 +58,12 @@ export type OutboundMessage =
   | { type: 'eject' }
   | { type: 'compileAll' }
   | { type: 'compilePlugin'; key: string }
-  | { type: 'updatePlugin'; key: string }
+  | { type: 'updatePlugin'; key: string; trustRepo?: boolean }
   | { type: 'checkUpdates' }
-  | { type: 'setTrustedRepo'; key: string; trusted: boolean }
   | { type: 'addDllPlugin'; path: string }
   | { type: 'addRepoPlugin'; url: string; projectFilePath: string }
   | { type: 'removePlugin'; key: string }
+  | { type: 'openUrl'; url: string }
   | { type: 'togglePlugin'; key: string; enabled: boolean }
   | { type: 'browseDll' }
   | { type: 'browseDirectory' }

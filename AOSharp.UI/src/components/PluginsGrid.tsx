@@ -1,7 +1,7 @@
 import type { Plugin } from '../types';
 import { sendToHost } from '../bridge';
 import { selectActiveProfile, selectPluginsMap, selectProfiles, useStore } from '../store';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import '../index.css';
 
 interface ContextMenu {
@@ -28,6 +28,11 @@ export function PluginsGrid() {
   );
   const [ctx, setCtx] = useState<ContextMenu | null>(null);
   const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
+  const [trustRepoOnUpdate, setTrustRepoOnUpdate] = useState(false);
+
+  useEffect(() => {
+    if (pendingUpdate) setTrustRepoOnUpdate(false);
+  }, [pendingUpdate]);
 
   // Keys of plugins that are enabled on at least one currently-injected profile
   const injectedPluginKeys = new Set(
@@ -244,19 +249,19 @@ export function PluginsGrid() {
               Compile
             </button>
           )}
-          {ctx.plugin.pluginType === 'Repo' && (
-            <>
-              <div style={{ height: 1, background: 'var(--color-border)', margin: '3px 0' }} />
-              <button
-                onClick={() => {
-                  sendToHost({ type: 'setTrustedRepo', key: ctx.pluginKey, trusted: !ctx.plugin.trustedRepo });
+          {ctx.plugin.pluginType === 'Repo' && ctx.plugin.repoUrl && (
+            <button
+              onClick={() => {
+                const url = ctx.plugin.repoUrl;
+                if (url) {
+                  sendToHost({ type: 'openUrl', url });
                   closeCtx();
-                }}
-                style={{ ...menuItemStyle, fontSize: 12, color: ctx.plugin.trustedRepo ? 'var(--color-text-muted)' : 'var(--color-text)' }}
-              >
-                {ctx.plugin.trustedRepo ? '✓ Trusted — click to untrust' : 'Trust this Repo'}
-              </button>
-            </>
+                }
+              }}
+              style={menuItemStyle}
+            >
+              More Info
+            </button>
           )}
           {!ctx.plugin.isDefault && (() => {
             const blocked = injectedPluginKeys.has(ctx.pluginKey);
@@ -317,15 +322,40 @@ export function PluginsGrid() {
             <p style={{ margin: '0 0 8px', fontSize: 13, color: 'var(--color-text-muted)', wordBreak: 'break-all' }}>
               {pendingUpdate.plugin.repoUrl}
             </p>
-            <p style={{ margin: '0 0 16px', fontSize: 13, lineHeight: 1.5 }}>
+            <p style={{ margin: '0 0 12px', fontSize: 13, lineHeight: 1.5 }}>
               Pulling an update will download and compile new code from this repository.
               Malicious updates can compromise your system.
               Only proceed if you have reviewed the incoming changes and confirmed they are safe.
             </p>
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 8,
+                margin: '0 0 16px',
+                fontSize: 12,
+                color: 'var(--color-text)',
+                cursor: 'pointer',
+                lineHeight: 1.4,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={trustRepoOnUpdate}
+                onChange={(e) => setTrustRepoOnUpdate(e.target.checked)}
+                style={{ marginTop: 2, cursor: 'pointer', flexShrink: 0 }}
+              />
+              <span>
+                Trust this repository for future updates
+                <span style={{ display: 'block', color: 'var(--color-text-muted)', fontSize: 11, marginTop: 2 }}>
+                  Skips this confirmation the next time an update is available.
+                </span>
+              </span>
+            </label>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button
                 onClick={() => {
-                  sendToHost({ type: 'updatePlugin', key: pendingUpdate.key });
+                  sendToHost({ type: 'updatePlugin', key: pendingUpdate.key, trustRepo: trustRepoOnUpdate });
                   setPendingUpdate(null);
                 }}
                 style={{
