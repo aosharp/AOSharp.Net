@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -34,6 +35,11 @@ namespace AOSharp.Services
 
     public class RepoCompiler
     {
+        /// <summary>Fallback when AOSharp.csproj cannot be found (keep in sync with Loader AOSharp.csproj).</summary>
+        private const string LoaderTargetFrameworkFallback = "net10.0-windows";
+
+        private static string _cachedLoaderTargetFramework;
+
         public event EventHandler<CompileProgressEventArgs> Progress;
 
         private void Report(string pluginName, string message, bool isError = false)
@@ -186,6 +192,309 @@ namespace AOSharp.Services
             }
         }
 
+        // ── Target framework alignment (match loader) ─────────────────────────
+
+        /// <summary>
+        /// Reads &lt;TargetFramework&gt; from a nearby AOSharp.csproj (walks up from the app directory).
+        /// Falls back to <see cref="LoaderTargetFrameworkFallback"/> when not found (e.g. shipped builds).
+        /// </summary>
+        public static string GetLoaderTargetFramework()
+        {
+            if (!string.IsNullOrEmpty(_cachedLoaderTargetFramework))
+                return _cachedLoaderTargetFramework;
+
+            _cachedLoaderTargetFramework = TryReadTargetFrameworkFromNearbyAoSharpCsproj() ?? LoaderTargetFrameworkFallback;
+            return _cachedLoaderTargetFramework;
+        }
+
+        private static string TryReadTargetFrameworkFromNearbyAoSharpCsproj()
+        {
+            foreach (var start in GetLoaderTfmSearchRoots().Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrEmpty(start) || !Directory.Exists(start))
+                    continue;
+
+                var dir = new DirectoryInfo(start);
+                for (var depth = 0; depth < 14 && dir != null; depth++, dir = dir.Parent)
+                {
+                    var candidate = Path.Combine(dir.FullName, "AOSharp.csproj");
+                    if (!File.Exists(candidate))
+                        continue;
+
+                    try
+                    {
+                        var doc = XDocument.Load(candidate);
+                        var tfm = doc.Descendants()
+                            .FirstOrDefault(e => string.Equals(e.Name.LocalName, "TargetFramework", StringComparison.Ordinal))?.Value?.Trim();
+                        if (!string.IsNullOrEmpty(tfm))
+                            return tfm;
+                    }
+                    catch
+                    {
+                        // ignore and keep walking
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private static IEnumerable<string> GetLoaderTfmSearchRoots()
+        {
+            yield return AppDomain.CurrentDomain.BaseDirectory;
+            var loc = SafeGetExecutingAssemblyDirectory();
+            if (!string.IsNullOrEmpty(loc))
+                yield return loc;
+        }
+
+        private static string SafeGetExecutingAssemblyDirectory()
+        {
+            try
+            {
+                var loc = Assembly.GetExecutingAssembly().Location;
+                if (string.IsNullOrEmpty(loc))
+                    return null;
+                return Path.GetDirectoryName(loc);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Bumps SDK-style TFMs in all .csproj and Directory.Build.props under the repo to match this loader.
+        /// Leaves netstandard* and classic net4xx TFMs unchanged.
+        /// </summary>
+        public void AlignCompiledRepoTargetFrameworks(string localRepoPath, string pluginNameForLogging)
+        {
+            if (string.IsNullOrEmpty(localRepoPath) || !Directory.Exists(localRepoPath))
+                return;
+
+            var loaderTfm = GetLoaderTargetFramework();
+            var any = false;
+
+            foreach (var file in Directory.GetFiles(localRepoPath, "*.csproj", SearchOption.AllDirectories))
+            {
+                if (TryBumpTfmsInMsbuildXmlFile(file, loaderTfm))
+                    any = true;
+            }
+
+            foreach (var file in Directory.GetFiles(localRepoPath, "Directory.Build.props", SearchOption.AllDirectories))
+            {
+                if (TryBumpTfmsInMsbuildXmlFile(file, loaderTfm))
+                    any = true;
+            }
+
+            if (any)
+                Report(pluginNameForLogging, $"Aligned repo target frameworks to {loaderTfm}.");
+        }
+
+        private static bool ShouldBumpTfmToken(string token)
+        {
+            var t = token?.Trim() ?? string.Empty;
+            if (t.Length == 0)
+                return false;
+            if (t.StartsWith("netstandard", StringComparison.OrdinalIgnoreCase))
+                return false;
+            // Classic: net462, net472, net481 (no dot after major)
+            if (Regex.IsMatch(t, @"^net\d{3,4}$", RegexOptions.IgnoreCase))
+                return false;
+            // .NET 5+ style: net6.0, net8.0-windows
+            return Regex.IsMatch(t, @"^net\d+\.\d+", RegexOptions.IgnoreCase);
+        }
+
+        private static string MapTfmTokenToLoader(string token, string loaderTfm) =>
+            ShouldBumpTfmToken(token) ? loaderTfm : token.Trim();
+
+        private static string BumpTargetFrameworksElementValue(string value, string loaderTfm)
+        {
+            var parts = value.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(p => MapTfmTokenToLoader(p, loaderTfm))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return string.Join(";", parts);
+        }
+
+        private static bool TryBumpTfmsInMsbuildXmlFile(string path, string loaderTfm)
+        {
+            XDocument doc;
+            try
+            {
+                doc = XDocument.Load(path, LoadOptions.PreserveWhitespace);
+            }
+            catch
+            {
+                return false;
+            }
+
+            var changed = false;
+            foreach (var el in doc.Descendants().Where(e =>
+                         string.Equals(e.Name.LocalName, "TargetFramework", StringComparison.Ordinal) ||
+                         string.Equals(e.Name.LocalName, "TargetFrameworks", StringComparison.Ordinal)))
+            {
+                if (string.Equals(el.Name.LocalName, "TargetFramework", StringComparison.Ordinal))
+                {
+                    var v = el.Value.Trim();
+                    if (ShouldBumpTfmToken(v) && !string.Equals(v, loaderTfm, StringComparison.OrdinalIgnoreCase))
+                    {
+                        el.Value = loaderTfm;
+                        changed = true;
+                    }
+                }
+                else
+                {
+                    var before = el.Value;
+                    var after = BumpTargetFrameworksElementValue(before, loaderTfm);
+                    if (!string.Equals(before.Trim(), after.Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        el.Value = after;
+                        changed = true;
+                    }
+                }
+            }
+
+            if (!changed)
+                return false;
+
+            try
+            {
+                doc.Save(path);
+            }
+            catch
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        // ── Solution / build configuration (valid Release|Platform for dotnet build) ──
+
+        /// <summary>Preferred solution platforms when building Release (first match in .sln wins).</summary>
+        private static readonly string[] SolutionPlatformPreference =
+        {
+            "x86", "Win32", "Any CPU", "AnyCPU", "x64"
+        };
+
+        /// <summary>Parses GlobalSection(SolutionConfigurationPlatforms) keys (left side of =).</summary>
+        private static List<string> ParseSolutionConfigurationPlatformKeys(string slnPath)
+        {
+            var keys = new List<string>();
+            try
+            {
+                var lines = File.ReadAllLines(slnPath);
+                var inSection = false;
+                foreach (var raw in lines)
+                {
+                    var line = raw.Trim();
+                    if (!inSection)
+                    {
+                        if (line.StartsWith("GlobalSection(SolutionConfigurationPlatforms)", StringComparison.OrdinalIgnoreCase))
+                            inSection = true;
+                        continue;
+                    }
+
+                    if (line.StartsWith("EndGlobalSection", StringComparison.OrdinalIgnoreCase))
+                        break;
+
+                    if (string.IsNullOrEmpty(line))
+                        continue;
+
+                    var eq = line.IndexOf('=');
+                    if (eq < 0)
+                        continue;
+
+                    var left = line.Substring(0, eq).Trim();
+                    if (left.Contains('|'))
+                        keys.Add(left);
+                }
+            }
+            catch
+            {
+                // ignored
+            }
+
+            return keys;
+        }
+
+        private static bool SolutionPlatformMatchesPreference(string preferenceToken, string solutionPlatform)
+        {
+            if (string.Equals(preferenceToken, solutionPlatform, StringComparison.OrdinalIgnoreCase))
+                return true;
+            return string.Equals(
+                preferenceToken.Replace(" ", ""),
+                solutionPlatform.Replace(" ", ""),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Picks a Release solution platform declared in the .sln (e.g. Any CPU when Release|x86 is absent).
+        /// Returns null if the section cannot be read or has no Release row.
+        /// </summary>
+        private static string TryPickReleaseSolutionPlatform(string slnPath)
+        {
+            var keys = ParseSolutionConfigurationPlatformKeys(slnPath);
+            if (keys.Count == 0)
+                return null;
+
+            var releasePlatforms = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var key in keys)
+            {
+                var parts = key.Split(new[] { '|' }, 2, StringSplitOptions.TrimEntries);
+                if (parts.Length != 2)
+                    continue;
+                if (!parts[0].Equals("Release", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (seen.Add(parts[1]))
+                    releasePlatforms.Add(parts[1]);
+            }
+
+            if (releasePlatforms.Count == 0)
+                return null;
+
+            foreach (var pref in SolutionPlatformPreference)
+            {
+                foreach (var plat in releasePlatforms)
+                {
+                    if (SolutionPlatformMatchesPreference(pref, plat))
+                        return plat;
+                }
+            }
+
+            return releasePlatforms[0];
+        }
+
+        /// <summary>Builds argv for <c>dotnet build</c>; uses ArgumentList-safe tokens (no shell).</summary>
+        /// <remarks>Does not set OutputPath here — a global OutputPath breaks some projects' Copy targets (MSB3094).</remarks>
+        /// <param name="slnReleasePlatform">From <see cref="TryPickReleaseSolutionPlatform"/> when building a .sln; otherwise null.</param>
+        private static List<string> ComposeDotnetBuildArgumentList(string projectFile, string slnReleasePlatform)
+        {
+            var args = new List<string>
+            {
+                "build",
+                projectFile,
+                "-c",
+                "Release",
+                "-p:PlatformTarget=x86",
+                "-v:m",
+                "--nologo"
+            };
+
+            if (!string.IsNullOrEmpty(slnReleasePlatform))
+            {
+                var idx = args.IndexOf("Release");
+                if (idx >= 0)
+                {
+                    // One argv; spaces in platform (e.g. "Any CPU") are OK with ArgumentList.
+                    args.Insert(idx + 1, $"-p:Platform={slnReleasePlatform}");
+                }
+            }
+
+            return args;
+        }
+
         // ── Build ──────────────────────────────────────────────────────────────
 
         /// <summary>
@@ -198,21 +507,32 @@ namespace AOSharp.Services
         }
 
         /// <summary>
-        /// Builds a project or solution file, directing output to Plugins\{outputName}\.
-        /// Returns the path to the primary output DLL, or null on failure.
+        /// Builds a project to its default output folder, then copies DLLs into Plugins\{outputName}\.
+        /// Returns the path to the primary output DLL under Plugins, or null on failure.
         /// </summary>
         public string Build(string projectFile, string outputName)
         {
             Report(outputName, $"Building {Path.GetFileName(projectFile)}...");
 
-            var outputPath = GetPluginOutputPath(outputName);
-            Directory.CreateDirectory(outputPath);
+            var pluginOutputDir = GetPluginOutputPath(outputName);
+            Directory.CreateDirectory(pluginOutputDir);
+
+            string slnReleasePlatform = null;
+            if (projectFile.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
+            {
+                slnReleasePlatform = TryPickReleaseSolutionPlatform(projectFile);
+                if (!string.IsNullOrEmpty(slnReleasePlatform) &&
+                    !slnReleasePlatform.Equals("x86", StringComparison.OrdinalIgnoreCase) &&
+                    !slnReleasePlatform.Equals("Win32", StringComparison.OrdinalIgnoreCase))
+                {
+                    Report(outputName,
+                        $"Solution has no Release|x86; building Release|{slnReleasePlatform} with PlatformTarget=x86 for 32-bit output.");
+                }
+            }
 
             var outputLines = new List<string>();
-            bool success = RunProcess("dotnet",
-                $"build \"{projectFile}\" -c Release -p:Platform=x86 -p:OutputPath=\"{outputPath}\" --nologo",
-                Path.GetDirectoryName(projectFile),
-                outputLines);
+            var argv = ComposeDotnetBuildArgumentList(projectFile, slnReleasePlatform);
+            bool success = RunProcessWithArgumentList("dotnet", argv, Path.GetDirectoryName(projectFile), outputLines);
 
             if (!success)
             {
@@ -222,13 +542,102 @@ namespace AOSharp.Services
                 return null;
             }
 
-            var dllPath = FindBuiltDll(outputName, outputLines);
-            if (dllPath != null)
-                Report(outputName, $"Built: {dllPath}");
-            else
+            var builtDll = FindBuiltDll(projectFile, outputLines);
+            if (builtDll == null)
+            {
                 Report(outputName, "Build succeeded but could not locate primary output DLL.", isError: true);
+                return null;
+            }
 
-            return dllPath;
+            try
+            {
+                CopyTopLevelDllsFromBuildOutput(Path.GetDirectoryName(builtDll), pluginOutputDir);
+            }
+            catch (Exception ex)
+            {
+                Report(outputName, $"Build output copy failed: {ex.Message}", isError: true);
+                return null;
+            }
+
+            var deployed = Path.Combine(pluginOutputDir, Path.GetFileName(builtDll));
+            Report(outputName, File.Exists(deployed) ? $"Built: {deployed}" : $"Built: {builtDll}");
+            return File.Exists(deployed) ? deployed : builtDll;
+        }
+
+        /// <summary>Copies every DLL from the project's build output directory into the plugin folder (top-level only, no ref/).</summary>
+        private static void CopyTopLevelDllsFromBuildOutput(string buildOutDir, string pluginOutputDir)
+        {
+            if (string.IsNullOrEmpty(buildOutDir) || !Directory.Exists(buildOutDir))
+                return;
+
+            Directory.CreateDirectory(pluginOutputDir);
+            foreach (var dll in Directory.GetFiles(buildOutDir, "*.dll", SearchOption.TopDirectoryOnly))
+            {
+                var dest = Path.Combine(pluginOutputDir, Path.GetFileName(dll));
+                File.Copy(dll, dest, overwrite: true);
+            }
+        }
+
+        private static string TryProbeDefaultBuildOutputDll(string csprojPath, string assemblyName)
+        {
+            var projDir = Path.GetDirectoryName(csprojPath);
+            if (string.IsNullOrEmpty(projDir) || string.IsNullOrEmpty(assemblyName))
+                return null;
+
+            var binRelease = Path.Combine(projDir, "bin", "Release");
+            if (!Directory.Exists(binRelease))
+                return null;
+
+            try
+            {
+                return Directory.EnumerateFiles(binRelease, assemblyName + ".dll", SearchOption.AllDirectories)
+                    .FirstOrDefault(p => !IsUnderRefDirectory(p));
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static bool IsUnderRefDirectory(string filePath)
+        {
+            var sep = Path.DirectorySeparatorChar;
+            return filePath.Contains($"{sep}ref{sep}", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string FindBuiltDll(string projectFile, List<string> buildOutput)
+        {
+            var projectStem = Path.GetFileNameWithoutExtension(projectFile);
+            var arrowPattern = new Regex(@"->\s*(.+\.dll)", RegexOptions.IgnoreCase);
+            var raw = new List<string>();
+            foreach (var line in buildOutput)
+            {
+                foreach (Match m in arrowPattern.Matches(line))
+                {
+                    var path = m.Groups[1].Value.Trim();
+                    if (File.Exists(path))
+                        raw.Add(path);
+                }
+            }
+
+            var candidates = raw.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+            var exact = candidates.FirstOrDefault(p =>
+                Path.GetFileNameWithoutExtension(p).Equals(projectStem, StringComparison.OrdinalIgnoreCase));
+            if (exact != null)
+                return exact;
+
+            var projDir = Path.GetDirectoryName(projectFile);
+            if (!string.IsNullOrEmpty(projDir))
+            {
+                var underProj = candidates.LastOrDefault(p =>
+                    p.StartsWith(projDir, StringComparison.OrdinalIgnoreCase) && !IsUnderRefDirectory(p));
+                if (underProj != null)
+                    return underProj;
+            }
+
+            return candidates.LastOrDefault(p => !IsUnderRefDirectory(p))
+                   ?? TryProbeDefaultBuildOutputDll(projectFile, projectStem);
         }
 
         // ── CompileAll ─────────────────────────────────────────────────────────
@@ -301,11 +710,12 @@ namespace AOSharp.Services
                 // Inject reference overrides using everything compiled so far
                 await Task.Run(() => InjectReferenceOverrides(localPath, compiledLibraries));
 
-                // Find the top-level build target (.sln preferred, then .csproj)
+                await Task.Run(() => AlignCompiledRepoTargetFrameworks(localPath, repoName));
+
                 var buildTarget = FindBuildTarget(localPath);
                 if (buildTarget == null)
                 {
-                    Report(repoName, "No .sln or .csproj found.", isError: true);
+                    Report(repoName, "No .csproj found.", isError: true);
                     groupResult.AllSucceeded = false;
                     MergeAndNotify(result, groupResult, onGroupComplete);
                     continue;
@@ -426,10 +836,12 @@ namespace AOSharp.Services
 
             await Task.Run(() => InjectReferenceOverrides(localPath, precompiledLibraries));
 
+            await Task.Run(() => AlignCompiledRepoTargetFrameworks(localPath, plugin.Name));
+
             var buildTarget = FindBuildTarget(localPath);
             if (buildTarget == null)
             {
-                Report(plugin.Name, "No .sln or .csproj found.", isError: true);
+                Report(plugin.Name, "No .csproj found.", isError: true);
                 result.AllSucceeded = false;
                 return result;
             }
@@ -486,14 +898,21 @@ namespace AOSharp.Services
             return Path.Combine(Directories.ReposDirPath, Utils.HashFromString(repoUrl));
         }
 
-        /// <summary>Returns the .sln if present, otherwise the first .csproj found.</summary>
+        /// <summary>
+        /// Returns a project file to build: prefers a .csproj in the repo root, otherwise the first .csproj under the tree (stable order).
+        /// Does not use .sln so repos are not required to ship a solution file.
+        /// </summary>
         public string FindBuildTarget(string localPath)
         {
-            var sln = Directory.GetFiles(localPath, "*.sln", SearchOption.TopDirectoryOnly).FirstOrDefault();
-            if (sln != null)
-                return sln;
+            var root = Directory.GetFiles(localPath, "*.csproj", SearchOption.TopDirectoryOnly)
+                .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+            if (root != null)
+                return root;
 
-            return Directory.GetFiles(localPath, "*.csproj", SearchOption.AllDirectories).FirstOrDefault();
+            return Directory.GetFiles(localPath, "*.csproj", SearchOption.AllDirectories)
+                .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
         }
 
         /// <summary>
@@ -517,28 +936,59 @@ namespace AOSharp.Services
                 .FirstOrDefault();
         }
 
-        private string FindBuiltDll(string outputName, List<string> buildOutput)
-        {
-            // Parse build output for "-> path/to/something.dll"
-            var arrowPattern = new Regex(@"->\s*(.+\.dll)", RegexOptions.IgnoreCase);
-            foreach (var line in buildOutput)
-            {
-                var match = arrowPattern.Match(line);
-                if (match.Success)
-                {
-                    var path = match.Groups[1].Value.Trim();
-                    if (File.Exists(path))
-                        return path;
-                }
-            }
-
-            return ResolveProjectDll(outputName, GetPluginOutputPath(outputName));
-        }
-
         private bool RunGit(string workingDir, string args)
         {
             Directory.CreateDirectory(workingDir);
             return RunProcess("git", args, workingDir, new List<string>());
+        }
+
+        private bool RunProcessWithArgumentList(string executable, List<string> argumentList, string workingDir, List<string> outputLines)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo(executable)
+                {
+                    WorkingDirectory = workingDir ?? Directory.GetCurrentDirectory(),
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                foreach (var a in argumentList)
+                    psi.ArgumentList.Add(a);
+
+                using var process = new Process { StartInfo = psi };
+                process.OutputDataReceived += (_, e) =>
+                {
+                    if (e.Data != null)
+                    {
+                        outputLines.Add(e.Data);
+                        Log.Debug($"[{executable}] {e.Data}");
+                    }
+                };
+                process.ErrorDataReceived += (_, e) =>
+                {
+                    if (e.Data != null)
+                    {
+                        outputLines.Add(e.Data);
+                        Log.Debug($"[{executable}:err] {e.Data}");
+                    }
+                };
+
+                process.Start();
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                process.WaitForExit();
+
+                return process.ExitCode == 0;
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Failed to run {executable} {string.Join(" ", argumentList)}: {ex.Message}");
+                outputLines.Add($"Exception: {ex.Message}");
+                return false;
+            }
         }
 
         private bool RunProcess(string executable, string args, string workingDir, List<string> outputLines)

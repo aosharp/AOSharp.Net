@@ -61,3 +61,7 @@ artifacts/
 # React UI
 AOSharp.UI/node_modules/
 AOSharp.UI/dist/
+
+# AOSharp loader runtime logs (e.g. LogYYYYMMDD.txt)
+AOSharp/Log*.txt
+

@@ -4,10 +4,13 @@ cd /d "%~dp0"
 
 :: ── Parse arguments ────────────────────────────────────────────────────────────
 set "CONFIG=Release"
+set "SKIP_UI=0"
 for %%a in (%*) do (
-  if /i "%%a"=="--debug" set "CONFIG=Debug"
+  if /i "%%a"=="--debug"   set "CONFIG=Debug"
+  if /i "%%a"=="--skip-ui" set "SKIP_UI=1"
 )
 echo Configuration: !CONFIG!
+if "!SKIP_UI!"=="1" echo Skipping React UI build.
 
 :: ── Locate vswhere ────────────────────────────────────────────────────────────
 set "PFX86=%ProgramFiles(x86)%"
@@ -30,6 +33,7 @@ if "!MSBUILD!"=="" (
 echo MSBuild: !MSBUILD!
 
 :: ── Build React UI ─────────────────────────────────────────────────────────
+if "!SKIP_UI!"=="1" goto :skip_ui
 echo Building React UI...
 pushd "%~dp0AOSharp.UI"
 call npm ci --prefer-offline 2>&1
@@ -49,6 +53,7 @@ if errorlevel 1 (
   exit /b 1
 )
 popd
+:skip_ui
 
 :: ── Build managed projects ────────────────────────────────────────────────────
 echo Building managed projects...
@@ -59,11 +64,20 @@ if errorlevel 1 (
   exit /b 1
 )
 
-:: ── Locate .NET 8 x86 host pack (nethost.h / libnethost.lib) — same as NativeHost.vcxproj
+:: ── Read TargetFramework from managed csproj (used for OutDir in NativeHost) ──
+set "MANAGED_TFM="
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -NonInteractive -Command "([xml](Get-Content '%~dp0AOSharp\AOSharp.csproj')).Project.PropertyGroup.TargetFramework"`) do set "MANAGED_TFM=%%i"
+if "!MANAGED_TFM!"=="" (
+  echo Could not read TargetFramework from AOSharp\AOSharp.csproj.
+  exit /b 1
+)
+echo ManagedTfm: !MANAGED_TFM!
+
+:: ── Locate .NET x86 host pack (nethost.h / libnethost.lib) — same as NativeHost.vcxproj
 set "DOTNET_HOST_PACK_DIR="
 for /f "usebackq delims=" %%i in (`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0NativeHost\ResolveDotNetHostPack.ps1"`) do set "DOTNET_HOST_PACK_DIR=%%i"
 if "!DOTNET_HOST_PACK_DIR!"=="" (
-  echo Could not resolve the .NET 8 x86 app host. Install the .NET 8 SDK, or set DOTNET_ROOT.
+  echo Could not resolve the .NET x86 app host. Install a .NET SDK with the win-x86 app host, or set DOTNET_ROOT.
   echo See NativeHost\ResolveDotNetHostPack.ps1.
   exit /b 1
 )
@@ -71,14 +85,15 @@ echo DotNet Host Pack: !DOTNET_HOST_PACK_DIR!
 
 :: ── Build NativeHost (C++ x86) ────────────────────────────────────────────────
 echo Building NativeHost ^(C++ x86^)...
-"!MSBUILD!" NativeHost\NativeHost.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:ManagedConfig=!CONFIG! /p:DotNetHostPackDir="!DOTNET_HOST_PACK_DIR!" /v:minimal /nologo
+"!MSBUILD!" NativeHost\NativeHost.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:ManagedConfig=!CONFIG! /p:ManagedTfm=!MANAGED_TFM! /p:DotNetHostPackDir="!DOTNET_HOST_PACK_DIR!" /v:minimal /nologo
 if errorlevel 1 (
   echo NativeHost build failed.
   exit /b 1
 )
 
 :: ── Copy React dist next to exe ────────────────────────────────────────────
-set "BINDIR=%~dp0bin\!CONFIG!\net8.0-windows"
+if "!SKIP_UI!"=="1" goto :skip_ui_copy
+set "BINDIR=%~dp0bin\!CONFIG!\!MANAGED_TFM!"
 set "UIDIST=%~dp0AOSharp.UI\dist"
 set "UIDEST=!BINDIR!\ui"
 echo Copying React UI to !UIDEST!...
@@ -88,6 +103,7 @@ if errorlevel 1 (
   echo Failed to copy React UI.
   exit /b 1
 )
+:skip_ui_copy
 
 echo.
 echo Build succeeded.

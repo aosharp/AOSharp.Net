@@ -42,14 +42,17 @@
   <ImportGroup Label="Shared" />
   <ImportGroup Label="PropertySheets" />
 
-  <!-- .NET 8 x86 host pack – headers and libs.
+  <!-- .NET x86 host pack – headers and libs.
        build.bat (or the command line) can pass /p:DotNetHostPackDir=...
        If unset, the ResolveDotNetHostPackDir target runs ResolveDotNetHostPack.ps1 to pick
-       the newest 8.0.x host pack (any installed patch, e.g. 8.0.11 or 8.0.24). -->
+       the newest available host pack.
+       ManagedTfm is passed from build.bat (read from the managed csproj) so OutDir stays
+       in sync without any hardcoded version string. -->
   <PropertyGroup>
     <!-- Output directly into the shared bin dir so dotnet build and msbuild agree on location -->
     <ManagedConfig Condition="'$(ManagedConfig)'==''">Release</ManagedConfig>
-    <OutDir>$(MSBuildProjectDirectory)\..\bin\$(ManagedConfig)\net8.0-windows\</OutDir>
+    <ManagedTfm Condition="'$(ManagedTfm)'==''">net10.0-windows</ManagedTfm>
+    <OutDir>$(MSBuildProjectDirectory)\..\bin\$(ManagedConfig)\$(ManagedTfm)\</OutDir>
     <TargetName>NativeHost</TargetName>
     <IntDir>$(MSBuildProjectDirectory)\obj\$(Configuration)\</IntDir>
   </PropertyGroup>
@@ -116,7 +119,7 @@
       <DotNetHostPackDir>@(DotNetHostPackFromExec)</DotNetHostPackDir>
     </PropertyGroup>
     <Error
-      Text="NativeHost: could not resolve .NET 8 x86 app host (nethost) path. Install the .NET 8 SDK, or set environment variable DOTNET_ROOT, or pass /p:DotNetHostPackDir=... to MSBuild. See NativeHost/ResolveDotNetHostPack.ps1."
+      Text="NativeHost: could not resolve .NET x86 app host (nethost) path. Install a .NET SDK with the win-x86 app host, or set environment variable DOTNET_ROOT, or pass /p:DotNetHostPackDir=... to MSBuild. See NativeHost/ResolveDotNetHostPack.ps1."
       Condition="'$(DotNetHostPackDir)'==''" />
   </Target>
 

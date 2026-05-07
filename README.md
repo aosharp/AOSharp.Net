@@ -54,6 +54,7 @@ Use this when you are compiling the **launcher** from this repository instead of
 - **Visual Studio 2022** (or Build Tools) with **MSBuild** and **Desktop development with C++**
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8)
 - **Node.js** (LTS) and npm
+- [Git](https://git-scm.com/downloads) (to clone the repository and its submodules)
 
 ### Commands
 

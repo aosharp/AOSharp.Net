@@ -45,6 +45,7 @@ namespace AOSharp
 
         public void Save()
         {
+            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
             File.WriteAllText(_path, JsonConvert.SerializeObject(this, Formatting.Indented));
         }
 
