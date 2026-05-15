@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using System.Xml.Linq;
 using AOSharp;
 using AOSharp.Data;
+using AOSharp.Models;
 using Serilog;
 
 namespace AOSharp.Services
@@ -115,15 +116,50 @@ namespace AOSharp.Services
         // ── Project discovery ──────────────────────────────────────────────────
 
         /// <summary>
-        /// Returns all .csproj files found in the repo directory, along with their AOSharpLibrary flag.
+        /// Returns all .csproj files found in the repo directory, along with library flag and optional Manifest.json metadata.
         /// </summary>
-        public List<(string name, string csprojPath, bool isLibrary)> DiscoverProjects(string localRepoPath)
+        public List<(string name, string csprojPath, bool isLibrary, string author, string description, List<string> dependencyRepoUrls)>
+            DiscoverProjects(string localRepoPath)
         {
-            return Directory
-                .GetFiles(localRepoPath, "*.csproj", SearchOption.AllDirectories)
-                .Select(p => (Path.GetFileNameWithoutExtension(p), p, ReadIsLibrary(p)))
+            var csprojs = Directory.GetFiles(localRepoPath, "*.csproj", SearchOption.AllDirectories);
+
+            return csprojs
+                .Select(p =>
+                {
+                    var manifest = PluginManifest.LoadForProject(p);
+                    return (
+                        Path.GetFileNameWithoutExtension(p),
+                        p,
+                        ReadIsLibrary(p),
+                        manifest.Author,
+                        manifest.Description,
+                        manifest.Dependencies ?? new List<string>());
+                })
                 .OrderBy(p => p.Item1)
                 .ToList();
+        }
+
+        /// <summary>Collects unique manifest dependency URLs declared anywhere in the repo.</summary>
+        public static HashSet<string> CollectManifestDependencyUrls(string localRepoPath)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(localRepoPath) || !Directory.Exists(localRepoPath))
+                return set;
+
+            var csprojs = Directory.GetFiles(localRepoPath, "*.csproj", SearchOption.AllDirectories);
+            foreach (var p in csprojs)
+            {
+                var manifest = PluginManifest.LoadForProject(p);
+                if (manifest.Dependencies == null)
+                    continue;
+                foreach (var u in manifest.Dependencies)
+                {
+                    if (!string.IsNullOrWhiteSpace(u))
+                        set.Add(u.Trim());
+                }
+            }
+
+            return set;
         }
 
         /// <summary>
@@ -640,6 +676,158 @@ namespace AOSharp.Services
                    ?? TryProbeDefaultBuildOutputDll(projectFile, projectStem);
         }
 
+        /// <summary>Re-reads Manifest.json from disk into the plugin (repo projects with a .csproj path only).</summary>
+        public static void ApplyManifestToPlugin(PluginModel plugin, string localRepoPath)
+        {
+            if (plugin == null || plugin.PluginType != PluginType.Repo || string.IsNullOrEmpty(localRepoPath) ||
+                !Directory.Exists(localRepoPath) || string.IsNullOrEmpty(plugin.ProjectFilePath))
+                return;
+
+            var m = PluginManifest.LoadForProject(plugin.ProjectFilePath);
+            plugin.Author = m.Author;
+            plugin.Description = m.Description;
+            plugin.DependencyRepoUrls = m.Dependencies != null ? new List<string>(m.Dependencies) : new List<string>();
+        }
+
+        private static IEnumerable<string> GetManifestDependencyUrlsForPlugin(PluginModel plugin, string localRepoPath)
+        {
+            if (string.IsNullOrEmpty(localRepoPath) || !Directory.Exists(localRepoPath))
+                yield break;
+
+            if (plugin.IsStub)
+            {
+                foreach (var u in CollectManifestDependencyUrls(localRepoPath))
+                    yield return u;
+                yield break;
+            }
+
+            if (string.IsNullOrEmpty(plugin.ProjectFilePath))
+                yield break;
+
+            var m = PluginManifest.LoadForProject(plugin.ProjectFilePath);
+            if (m.Dependencies == null)
+                yield break;
+
+            foreach (var u in m.Dependencies)
+            {
+                if (!string.IsNullOrWhiteSpace(u))
+                    yield return u.Trim();
+            }
+        }
+
+        private static string GetManifestDependencyOutputFolderName(string depRepoUrl)
+        {
+            var h = Utils.HashFromString(depRepoUrl ?? string.Empty);
+            return string.Concat(("manifest_dep_" + h).Split(Path.GetInvalidFileNameChars()));
+        }
+
+        private async Task<bool> BuildManifestDependencyReposAsync(
+            string logName,
+            string depRepoUrl,
+            string skipEqualToRootRepoUrl,
+            List<(string packageId, string dllPath)> compiledLibraries,
+            HashSet<string> completed,
+            HashSet<string> inProgress,
+            bool pullFirst)
+        {
+            if (!string.IsNullOrEmpty(skipEqualToRootRepoUrl) &&
+                string.Equals(depRepoUrl, skipEqualToRootRepoUrl, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (completed.Contains(depRepoUrl))
+                return true;
+
+            if (!inProgress.Add(depRepoUrl))
+            {
+                Report(logName, $"Manifest dependency cycle at '{depRepoUrl}'.", isError: true);
+                return false;
+            }
+
+            try
+            {
+                var depLocal = GetLocalRepoPath(depRepoUrl);
+                if (pullFirst)
+                {
+                    if (!await Task.Run(() => CloneOrPull(depRepoUrl, depLocal)))
+                    {
+                        Report(logName, $"Failed to clone/pull manifest dependency: {depRepoUrl}", isError: true);
+                        return false;
+                    }
+                }
+                else if (!Directory.Exists(Path.Combine(depLocal, ".git")))
+                {
+                    if (!await Task.Run(() => CloneOrPull(depRepoUrl, depLocal)))
+                    {
+                        Report(logName, $"Failed to clone manifest dependency: {depRepoUrl}", isError: true);
+                        return false;
+                    }
+                }
+
+                foreach (var nested in CollectManifestDependencyUrls(depLocal))
+                {
+                    if (!await BuildManifestDependencyReposAsync(
+                            logName, nested, skipEqualToRootRepoUrl, compiledLibraries, completed, inProgress, pullFirst))
+                        return false;
+                }
+
+                await Task.Run(() => AlignCompiledRepoTargetFrameworks(depLocal, logName));
+                await Task.Run(() => InjectReferenceOverrides(depLocal, compiledLibraries));
+
+                var depTarget = FindBuildTarget(depLocal);
+                if (depTarget == null)
+                {
+                    Report(logName, $"Manifest dependency has no .csproj: {depRepoUrl}", isError: true);
+                    return false;
+                }
+
+                var outFolder = GetManifestDependencyOutputFolderName(depRepoUrl);
+                var primaryDll = await Task.Run(() => Build(depTarget, outFolder));
+                if (primaryDll == null)
+                    return false;
+
+                var outputDir = GetPluginOutputPath(outFolder);
+                if (Directory.Exists(outputDir))
+                {
+                    foreach (var dll in Directory.GetFiles(outputDir, "*.dll", SearchOption.TopDirectoryOnly))
+                    {
+                        var id = Path.GetFileNameWithoutExtension(dll);
+                        if (!compiledLibraries.Any(l =>
+                                string.Equals(l.packageId, id, StringComparison.OrdinalIgnoreCase)))
+                            compiledLibraries.Add((id, dll));
+                    }
+                }
+
+                completed.Add(depRepoUrl);
+                return true;
+            }
+            finally
+            {
+                inProgress.Remove(depRepoUrl);
+            }
+        }
+
+        private async Task<bool> BuildAllManifestDependenciesAsync(
+            string logName,
+            IEnumerable<string> topLevelDependencyUrls,
+            string skipEqualToRootRepoUrl,
+            List<(string packageId, string dllPath)> compiledLibraries,
+            bool pullFirst)
+        {
+            var completed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var inProgress = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var url in topLevelDependencyUrls.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(url))
+                    continue;
+                var trimmed = url.Trim();
+                if (!await BuildManifestDependencyReposAsync(
+                        logName, trimmed, skipEqualToRootRepoUrl, compiledLibraries, completed, inProgress, pullFirst))
+                    return false;
+            }
+
+            return true;
+        }
+
         // ── CompileAll ─────────────────────────────────────────────────────────
 
         /// <summary>
@@ -707,6 +895,16 @@ namespace AOSharp.Services
                     }
                 }
 
+                var manifestDepUrls = CollectManifestDependencyUrls(localPath)
+                    .Where(u => !string.Equals(u, repoUrl, StringComparison.OrdinalIgnoreCase));
+                if (!await BuildAllManifestDependenciesAsync(repoName, manifestDepUrls, repoUrl, compiledLibraries, pullFirst))
+                {
+                    Report(repoName, "Manifest dependency build failed.", isError: true);
+                    groupResult.AllSucceeded = false;
+                    MergeAndNotify(result, groupResult, onGroupComplete);
+                    continue;
+                }
+
                 // Inject reference overrides using everything compiled so far
                 await Task.Run(() => InjectReferenceOverrides(localPath, compiledLibraries));
 
@@ -748,7 +946,7 @@ namespace AOSharp.Services
                     foreach (var stub in stubs)
                         groupResult.KeysToRemove.Add(stub.Key);
 
-                    foreach (var (projName, csprojPath, projIsLibrary) in discoveredProjects)
+                    foreach (var (projName, csprojPath, projIsLibrary, author, description, depUrls) in discoveredProjects)
                     {
                         var relPath = Path.GetRelativePath(localPath, csprojPath);
                         var key = Utils.HashFromString(repoUrl + "|" + relPath);
@@ -766,7 +964,10 @@ namespace AOSharp.Services
                             ProjectFilePath = csprojPath,
                             IsLibrary = projIsLibrary,
                             AutoUpdate = representative.AutoUpdate,
-                            Path = dllPath ?? string.Empty
+                            Path = dllPath ?? string.Empty,
+                            Author = author,
+                            Description = description,
+                            DependencyRepoUrls = depUrls != null ? new List<string>(depUrls) : new List<string>()
                         };
                     }
                 }
@@ -778,6 +979,7 @@ namespace AOSharp.Services
                         var dllPath = ResolveProjectDll(plugin.Name, outputDir);
                         if (dllPath != null)
                             plugin.Path = dllPath;
+                        ApplyManifestToPlugin(plugin, localPath);
                     }
                 }
 
@@ -834,7 +1036,20 @@ namespace AOSharp.Services
                 }
             }
 
-            await Task.Run(() => InjectReferenceOverrides(localPath, precompiledLibraries));
+            var combinedLibs = precompiledLibraries != null
+                ? new List<(string packageId, string dllPath)>(precompiledLibraries)
+                : new List<(string packageId, string dllPath)>();
+
+            var urlsForThis = GetManifestDependencyUrlsForPlugin(plugin, localPath)
+                .Where(u => !string.Equals(u, plugin.RepoUrl, StringComparison.OrdinalIgnoreCase));
+            if (!await BuildAllManifestDependenciesAsync(plugin.Name, urlsForThis, plugin.RepoUrl, combinedLibs, pullFirst))
+            {
+                Report(plugin.Name, "Manifest dependency build failed.", isError: true);
+                result.AllSucceeded = false;
+                return result;
+            }
+
+            await Task.Run(() => InjectReferenceOverrides(localPath, combinedLibs));
 
             await Task.Run(() => AlignCompiledRepoTargetFrameworks(localPath, plugin.Name));
 
@@ -860,7 +1075,7 @@ namespace AOSharp.Services
                 var outputDir = GetPluginOutputPath(plugin.Name);
                 var discovered = await Task.Run(() => DiscoverProjects(localPath));
 
-                foreach (var (projName, csprojPath, projIsLibrary) in discovered)
+                foreach (var (projName, csprojPath, projIsLibrary, author, description, depUrls) in discovered)
                 {
                     var relPath = Path.GetRelativePath(localPath, csprojPath);
                     var key = Utils.HashFromString(plugin.RepoUrl + "|" + relPath);
@@ -874,7 +1089,10 @@ namespace AOSharp.Services
                         ProjectFilePath = csprojPath,
                         IsLibrary = projIsLibrary,
                         AutoUpdate = plugin.AutoUpdate,
-                        Path = dllPath ?? string.Empty
+                        Path = dllPath ?? string.Empty,
+                        Author = author,
+                        Description = description,
+                        DependencyRepoUrls = depUrls != null ? new List<string>(depUrls) : new List<string>()
                     };
                 }
             }
@@ -883,6 +1101,7 @@ namespace AOSharp.Services
                 var dllPath = ResolveProjectDll(plugin.Name, GetPluginOutputPath(plugin.Name));
                 if (dllPath != null)
                     plugin.Path = dllPath;
+                ApplyManifestToPlugin(plugin, localPath);
             }
 
             return result;

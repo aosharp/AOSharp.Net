@@ -37,6 +37,15 @@ namespace AOSharp
         /// </summary>
         public string ProjectFilePath { get; set; }
 
+        /// <summary>From Manifest.json (optional).</summary>
+        public string Author { get; set; }
+
+        /// <summary>From Manifest.json (optional).</summary>
+        public string Description { get; set; }
+
+        /// <summary>Repository URLs from Manifest.json; cloned and built before this project.</summary>
+        public List<string> DependencyRepoUrls { get; set; }
+
         /// <summary>
         /// True when this is a repo entry that has not yet been expanded to per-project entries.
         /// </summary>

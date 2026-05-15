@@ -4,6 +4,8 @@ export interface RepoProject {
   name: string;
   path: string;
   isLibrary: boolean;
+  author?: string | null;
+  description?: string | null;
 }
 
 export interface Plugin {
@@ -23,6 +25,9 @@ export interface Plugin {
   trustedRepo: boolean;
   localCommit: string | null;
   remoteCommit: string | null;
+  author?: string | null;
+  description?: string | null;
+  dependencyRepoUrls?: string[] | null;
 }
 
 export interface Profile {

@@ -112,7 +112,8 @@ export function PluginsGrid() {
             <th style={{ ...thStyle, width: 60 }}>Source</th>
             <th style={{ ...thStyle, width: 65 }}>Type</th>
             <th style={{ ...thStyle, width: 65 }}>Compiled</th>
-            <th style={{ ...thStyle }}>Path</th>
+            <th style={{ ...thStyle, width: 120 }}>Author</th>
+            <th style={{ ...thStyle }}>Description</th>
           </tr>
         </thead>
         <tbody>
@@ -199,7 +200,21 @@ export function PluginsGrid() {
                   <span style={{ color: 'var(--color-text-muted)' }}>—</span>
                 )}
               </td>
-              <td style={{ ...tdStyle(plugin), maxWidth: 'unset' }}>{plugin.path}</td>
+              <td style={{ ...tdStyle(plugin), maxWidth: 140 }} title={(plugin.author ?? '').trim() || undefined}>
+                {(plugin.author ?? '').trim() || '—'}
+              </td>
+              <td
+                style={{
+                  ...tdStyle(plugin),
+                  maxWidth: 'unset',
+                  whiteSpace: 'normal',
+                  wordBreak: 'break-word',
+                  lineHeight: 1.35,
+                }}
+                title={(plugin.description ?? '').trim() || undefined}
+              >
+                {(plugin.description ?? '').trim() || '—'}
+              </td>
             </tr>
           ))}
         </tbody>

@@ -458,7 +458,14 @@ namespace AOSharp
 
             var discovered = await Task.Run(() => _repoCompiler.DiscoverProjects(localPath));
             var projects = discovered
-                .Select(p => new { name = p.name, path = p.csprojPath, isLibrary = p.isLibrary })
+                .Select(p => new
+                {
+                    name = p.name,
+                    path = p.csprojPath,
+                    isLibrary = p.isLibrary,
+                    author = p.author,
+                    description = p.description
+                })
                 .ToArray();
 
             PostMessage(new { type = "repoCsprojs", projects });
@@ -483,7 +490,7 @@ namespace AOSharp
             var name = Path.GetFileNameWithoutExtension(projectFilePath);
             bool isLibrary = RepoCompiler.ReadIsLibrary(projectFilePath);
 
-            _config.Plugins.Add(key, new PluginModel
+            var plugin = new PluginModel
             {
                 PluginType = PluginType.Repo,
                 Name = name,
@@ -491,7 +498,9 @@ namespace AOSharp
                 IsLibrary = isLibrary,
                 ProjectFilePath = projectFilePath,
                 Path = string.Empty
-            });
+            };
+            RepoCompiler.ApplyManifestToPlugin(plugin, RepoCompiler.GetLocalRepoPath(url));
+            _config.Plugins.Add(key, plugin);
         }
 
         private void HandleRemovePlugin(string key)
@@ -592,7 +601,10 @@ namespace AOSharp
                         hasUpdate = kvp.Value.HasUpdate,
                         trustedRepo = kvp.Value.TrustedRepo,
                         localCommit = kvp.Value.LocalCommit,
-                        remoteCommit = kvp.Value.RemoteCommit
+                        remoteCommit = kvp.Value.RemoteCommit,
+                        author = kvp.Value.Author,
+                        description = kvp.Value.Description,
+                        dependencyRepoUrls = kvp.Value.DependencyRepoUrls
                     });
 
                 var state = new
@@ -634,7 +646,15 @@ namespace AOSharp
                     if (!_config.Plugins.ContainsKey(kvp.Key))
                         _config.Plugins.Add(kvp.Key, kvp.Value);
                     else
-                        _config.Plugins[kvp.Key].Path = kvp.Value.Path;
+                    {
+                        var existing = _config.Plugins[kvp.Key];
+                        existing.Path = kvp.Value.Path;
+                        existing.Author = kvp.Value.Author;
+                        existing.Description = kvp.Value.Description;
+                        existing.DependencyRepoUrls = kvp.Value.DependencyRepoUrls != null
+                            ? new List<string>(kvp.Value.DependencyRepoUrls)
+                            : new List<string>();
+                    }
                 }
             }
             finally
