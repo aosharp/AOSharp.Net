@@ -81,8 +81,8 @@ namespace AOSharp
         }
 
         /// <summary>
-        /// Returns (packageId, dllPath) pairs for all compiled library plugins,
-        /// used by RepoCompiler to substitute NuGet references with local builds.
+        /// Returns (packageId, dllPath) for every compiled <see cref="PluginModel.IsLibrary"/> plugin in the loader config.
+        /// RepoCompiler merges these into reference injection so AOSharp SDK and other libraries always resolve from local builds (same idea as NuGet package substitution).
         /// </summary>
         public IEnumerable<(string packageId, string dllPath)> GetCompiledLibraryPaths()
         {

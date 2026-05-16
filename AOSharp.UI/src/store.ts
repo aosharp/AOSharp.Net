@@ -7,6 +7,7 @@ interface Toast {
   level: 'info' | 'error';
   title: string;
   message: string;
+  openLogOnClick?: boolean;
 }
 
 interface CompileProgress {
@@ -101,7 +102,16 @@ export function initBridge(): void {
     } else if (msg.type === 'toast') {
       const id = ++_toastSeq;
       useStore.setState((s) => ({
-        toasts: [...s.toasts, { id, level: msg.level, title: msg.title, message: msg.message }],
+        toasts: [
+          ...s.toasts,
+          {
+            id,
+            level: msg.level,
+            title: msg.title,
+            message: msg.message,
+            ...(msg.openLogOnClick ? { openLogOnClick: true as const } : {}),
+          },
+        ],
       }));
       setTimeout(() => useStore.getState().dismissToast(id), 6000);
     }

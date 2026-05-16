@@ -151,6 +151,10 @@ namespace AOSharp
                         _dispatcher.Invoke(() => HandleOpenUrl(msg.Url));
                         break;
 
+                    case "openLogFile":
+                        _dispatcher.Invoke(HandleOpenLogFile);
+                        break;
+
                     case "togglePlugin":
                         HandleTogglePlugin(msg.Key, msg.Enabled);
                         break;
@@ -211,6 +215,41 @@ namespace AOSharp
             }
         }
 
+        /// <summary>
+        /// Serilog daily rolling: {name}{yyyyMMdd}{ext} next to the configured template (see MainWindow logger).
+        /// </summary>
+        private static string GetCurrentRollingLogPath()
+        {
+            string template = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Log.txt");
+            string dir = Path.GetDirectoryName(template);
+            string stem = Path.GetFileNameWithoutExtension(template);
+            string ext = Path.GetExtension(template);
+            return Path.Combine(string.IsNullOrEmpty(dir) ? AppDomain.CurrentDomain.BaseDirectory : dir,
+                stem + DateTime.Now.ToString("yyyyMMdd") + ext);
+        }
+
+        private void HandleOpenLogFile()
+        {
+            string path = GetCurrentRollingLogPath();
+            try
+            {
+                if (File.Exists(path))
+                {
+                    Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+                    return;
+                }
+
+                string folder = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(folder) && Directory.Exists(folder))
+                    Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"[Bridge] openLogFile failed: {ex.Message}");
+                SendToast("error", "Could not open log", ex.Message);
+            }
+        }
+
         private async Task HandleInjectAsync()
         {
             if (_activeProfile == null) return;
@@ -260,12 +299,13 @@ namespace AOSharp
                 var result = await _repoCompiler.CompileAll(
                     _config.Plugins.ToList(),
                     pullFirst: false,
-                    onGroupComplete: partial => _dispatcher.Invoke(() => ApplyCompileResult(partial)));
+                    onGroupComplete: partial => _dispatcher.Invoke(() => ApplyCompileResult(partial)),
+                    precompiledLibraries: _config.GetCompiledLibraryPaths());
 
                 if (result.AllSucceeded)
                     SendToast("info", "Compile Plugins", "All plugins compiled successfully.");
                 else
-                    SendToast("error", "Compile Plugins", "One or more plugins failed. Check Log.txt.");
+                    SendToast("error", "Compile Plugins", "One or more plugins failed. Check Log.txt.", openLogOnClick: true);
             }
             finally
             {
@@ -288,11 +328,11 @@ namespace AOSharp
                 if (result.AllSucceeded)
                     SendToast("info", "Compile Plugin", $"{plugin.Name} compiled successfully.");
                 else
-                    SendToast("error", "Compile Plugin", $"{plugin.Name} failed. Check Log.txt.");
+                    SendToast("error", "Compile Plugin", $"{plugin.Name} failed. Check Log.txt.", openLogOnClick: true);
             }
             catch (Exception ex)
             {
-                SendToast("error", "Compile Plugin", ex.Message);
+                SendToast("error", "Compile Plugin", ex.Message, openLogOnClick: true);
             }
         }
 
@@ -336,12 +376,12 @@ namespace AOSharp
                 }
                 else
                 {
-                    SendToast("error", "Update Plugin", $"{plugin.Name} update failed. Check Log.txt.");
+                    SendToast("error", "Update Plugin", $"{plugin.Name} update failed. Check Log.txt.", openLogOnClick: true);
                 }
             }
             catch (Exception ex)
             {
-                SendToast("error", "Update Plugin", ex.Message);
+                SendToast("error", "Update Plugin", ex.Message, openLogOnClick: true);
             }
             finally
             {
@@ -680,8 +720,13 @@ namespace AOSharp
             PostMessage(new { type = "compileProgress", pluginName = args.PluginName, message = args.Message });
         }
 
-        private void SendToast(string level, string title, string message)
-            => PostMessage(new { type = "toast", level, title, message });
+        private void SendToast(string level, string title, string message, bool openLogOnClick = false)
+        {
+            if (openLogOnClick)
+                PostMessage(new { type = "toast", level, title, message, openLogOnClick = true });
+            else
+                PostMessage(new { type = "toast", level, title, message });
+        }
 
         private void PostMessage(object payload)
         {

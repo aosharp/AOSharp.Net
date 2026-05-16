@@ -1,3 +1,4 @@
+import { sendToHost } from '../bridge';
 import { useStore } from '../store';
 
 export function Toaster() {
@@ -22,7 +23,13 @@ export function Toaster() {
       {toasts.map((t) => (
         <div
           key={t.id}
-          onClick={() => dismiss(t.id)}
+          title={t.openLogOnClick ? "Click to open today's log file" : undefined}
+          onClick={() => {
+            if (t.openLogOnClick) {
+              sendToHost({ type: 'openLogFile' });
+            }
+            dismiss(t.id);
+          }}
           style={{
             background: t.level === 'error' ? '#3d1a1a' : 'var(--color-surface)',
             border: `1px solid ${t.level === 'error' ? 'var(--color-red)' : 'var(--color-border)'}`,

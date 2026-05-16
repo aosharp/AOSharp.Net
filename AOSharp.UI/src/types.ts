@@ -52,7 +52,7 @@ export type InboundMessage =
   | { type: 'compileProgress'; pluginName: string; message: string }
   | { type: 'browseResult'; kind: 'dll' | 'directory'; path: string }
   | { type: 'repoCsprojs'; projects: RepoProject[] }
-  | { type: 'toast'; level: 'info' | 'error'; title: string; message: string };
+  | { type: 'toast'; level: 'info' | 'error'; title: string; message: string; openLogOnClick?: boolean };
 
 // ── Messages React → C# ─────────────────────────────────────────────────────
 
@@ -69,6 +69,7 @@ export type OutboundMessage =
   | { type: 'addRepoPlugin'; url: string; projectFilePath: string }
   | { type: 'removePlugin'; key: string }
   | { type: 'openUrl'; url: string }
+  | { type: 'openLogFile' }
   | { type: 'togglePlugin'; key: string; enabled: boolean }
   | { type: 'browseDll' }
   | { type: 'browseDirectory' }

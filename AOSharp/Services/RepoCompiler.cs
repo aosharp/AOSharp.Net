@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Security;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -183,48 +184,403 @@ namespace AOSharp.Services
         // ── Reference overrides ────────────────────────────────────────────────
 
         /// <summary>
-        /// Writes AOSharpLoader.props into the repo root, substituting known NuGet packages
-        /// with locally compiled DLL references. Ensures Directory.Build.props imports it.
+        /// True for SDK-style assemblies (<c>AOSharp.Common</c>, <c>AOSharp.Core</c>, …).
+        /// Excludes the WPF loader host <c>AOSharp.dll</c> (stem <c>AOSharp</c> only), which would otherwise match <c>AOSharp.*</c> globs.
+        /// </summary>
+        private static bool IsAoSharpSdkAssemblyStem(string stem)
+        {
+            if (string.IsNullOrEmpty(stem))
+                return false;
+            if (string.Equals(stem, "AOSharp", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return stem.StartsWith("AOSharp.", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Finds AOSharp SDK assemblies next to the loader or under Plugins (library build output).
+        /// Used so repo plugins that use direct assembly references resolve when HintPath or NuGet layout does not match the loader machine.
+        /// </summary>
+        public static List<(string packageId, string dllPath)> ResolveBundledAoSharpSdkDlls()
+        {
+            var roots = new List<string>();
+            if (!string.IsNullOrEmpty(Directories.CurrentDirectory) && Directory.Exists(Directories.CurrentDirectory))
+                roots.Add(Directories.CurrentDirectory);
+            if (!string.IsNullOrEmpty(Directories.PluginsDirPath) && Directory.Exists(Directories.PluginsDirPath))
+                roots.Add(Directories.PluginsDirPath);
+
+            var byId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var root in roots)
+            {
+                try
+                {
+                    foreach (var path in Directory.EnumerateFiles(root, "*.dll", SearchOption.AllDirectories))
+                    {
+                        if (IsUnderRefDirectory(path))
+                            continue;
+                        var id = Path.GetFileNameWithoutExtension(path);
+                        if (!IsAoSharpSdkAssemblyStem(id))
+                            continue;
+
+                        if (!byId.TryGetValue(id, out var existing) ||
+                            File.GetLastWriteTimeUtc(path) >= File.GetLastWriteTimeUtc(existing))
+                            byId[id] = Path.GetFullPath(path);
+                    }
+                }
+                catch
+                {
+                    // ignore IO errors under a single root
+                }
+            }
+
+            TryFillSdkDllsFromDefaultSdkClone(byId);
+            TryFillSdkDllsFromDevSourceTree(byId);
+
+            return byId.Select(kvp => (kvp.Key, kvp.Value)).ToList();
+        }
+
+        /// <summary>
+        /// Picks up AOSharp.*.dll built inside the default AOSharp.SDK clone (under repos) when Plugins is empty.
+        /// </summary>
+        private static void TryFillSdkDllsFromDefaultSdkClone(Dictionary<string, string> byId)
+        {
+            if (byId == null)
+                return;
+
+            var cloneRoot = GetLocalRepoPath(Config.AoSharpSdkRepoUrl);
+            if (string.IsNullOrEmpty(cloneRoot) || !Directory.Exists(Path.Combine(cloneRoot, ".git")))
+                return;
+
+            try
+            {
+                foreach (var path in Directory.EnumerateFiles(cloneRoot, "AOSharp.*.dll", SearchOption.AllDirectories))
+                {
+                    if (IsUnderRefDirectory(path))
+                        continue;
+                    var idx = path.IndexOf($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase);
+                    if (idx < 0)
+                        idx = path.IndexOf($"{Path.AltDirectorySeparatorChar}bin{Path.AltDirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase);
+                    if (idx < 0)
+                        continue;
+
+                    var id = Path.GetFileNameWithoutExtension(path);
+                    if (string.IsNullOrEmpty(id) || !id.StartsWith("AOSharp.", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    if (!byId.TryGetValue(id, out var existing) ||
+                        File.GetLastWriteTimeUtc(path) >= File.GetLastWriteTimeUtc(existing))
+                        byId[id] = Path.GetFullPath(path);
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        /// <summary>
+        /// When running from a dev layout (Loader\bin\...\net*-windows), pick up freshly built SDK DLLs from the sibling SDK folder.
+        /// </summary>
+        private static void TryFillSdkDllsFromDevSourceTree(Dictionary<string, string> byId)
+        {
+            if (byId == null)
+                return;
+
+            string exeDir = Directories.CurrentDirectory;
+            if (string.IsNullOrEmpty(exeDir))
+                return;
+
+            string workspaceRoot;
+            try
+            {
+                workspaceRoot = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "..", ".."));
+            }
+            catch
+            {
+                return;
+            }
+
+            var sdkDir = Path.Combine(workspaceRoot, "SDK");
+            if (!Directory.Exists(sdkDir))
+                return;
+
+            var tfm = GetLoaderTargetFramework();
+            foreach (var proj in new[] { "AOSharp.Common", "AOSharp.Core", "AOSharp.Bootstrap" })
+            {
+                if (byId.ContainsKey(proj))
+                    continue;
+
+                foreach (var cfg in new[] { "Release", "Debug" })
+                {
+                    var p = Path.Combine(sdkDir, proj, "bin", cfg, tfm, proj + ".dll");
+                    if (!File.Exists(p))
+                        continue;
+                    byId[proj] = Path.GetFullPath(p);
+                    break;
+                }
+            }
+        }
+
+        private static string XmlEscapeHintPath(string s)
+        {
+            if (string.IsNullOrEmpty(s))
+                return s;
+            return s.Replace("&", "&amp;").Replace("\"", "&quot;").Replace("<", "&lt;").Replace(">", "&gt;");
+        }
+
+        /// <summary>
+        /// Adds SDK DLLs found next to the loader or under Plugins when the list does not already define that assembly.
+        /// </summary>
+        private static void AddBundledAoSharpSdkDllsWhereMissing(List<(string packageId, string dllPath)> list)
+        {
+            foreach (var pair in ResolveBundledAoSharpSdkDlls())
+            {
+                if (!list.Any(l => string.Equals(l.packageId, pair.packageId, StringComparison.OrdinalIgnoreCase)))
+                    list.Add(pair);
+            }
+        }
+
+        /// <summary>
+        /// Inserts or replaces one library reference (by assembly / NuGet id).
+        /// </summary>
+        private static void UpsertCompiledLibrary(List<(string packageId, string dllPath)> list, (string packageId, string dllPath) entry)
+        {
+            if (string.IsNullOrWhiteSpace(entry.packageId) || string.IsNullOrWhiteSpace(entry.dllPath) ||
+                !File.Exists(entry.dllPath))
+                return;
+            if (string.Equals(entry.packageId.Trim(), "AOSharp", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            var ix = list.FindIndex(l => string.Equals(l.packageId, entry.packageId, StringComparison.OrdinalIgnoreCase));
+            if (ix < 0)
+                list.Add(entry);
+            else
+                list[ix] = entry;
+        }
+
+        /// <summary>
+        /// Applies locally compiled library plugins from the loader config (same role as NuGet overrides), replacing any prior path for the same id.
+        /// </summary>
+        private static void MergePrecompiledLibraries(List<(string packageId, string dllPath)> list,
+            IEnumerable<(string packageId, string dllPath)> precompiled)
+        {
+            if (precompiled == null)
+                return;
+            foreach (var p in precompiled)
+                UpsertCompiledLibrary(list, p);
+        }
+
+        /// <summary>Preferred build order when compiling all AOSharp.SDK library projects.</summary>
+        private static readonly string[] AoSharpSdkLibraryBuildOrder =
+        {
+            "AOSharp.Bootstrap",
+            "AOSharp.Common",
+            "AOSharp.Core"
+        };
+
+        /// <summary>Registers only AOSharp SDK assembly outputs from a plugin build folder.</summary>
+        private static void RegisterAoSharpSdkDllsFromOutputDir(
+            List<(string packageId, string dllPath)> compiledLibraries,
+            string outputDir)
+        {
+            if (compiledLibraries == null || string.IsNullOrEmpty(outputDir) || !Directory.Exists(outputDir))
+                return;
+
+            foreach (var dll in Directory.GetFiles(outputDir, "*.dll", SearchOption.TopDirectoryOnly))
+            {
+                var id = Path.GetFileNameWithoutExtension(dll);
+                if (!IsAoSharpSdkAssemblyStem(id))
+                    continue;
+                UpsertCompiledLibrary(compiledLibraries, (id, dll));
+            }
+        }
+
+        /// <summary>Builds Bootstrap → Common → Core in the AOSharp.SDK clone and registers DLL paths.</summary>
+        private async Task<bool> BuildAoSharpSdkLibraryProjectsAsync(
+            string logName,
+            string sdkLocalPath,
+            List<(string packageId, string dllPath)> compiledLibraries,
+            bool pullFirst)
+        {
+            if (string.IsNullOrEmpty(sdkLocalPath))
+                return false;
+
+            if (pullFirst)
+            {
+                if (!await Task.Run(() => CloneOrPull(Config.AoSharpSdkRepoUrl, sdkLocalPath)))
+                {
+                    Report(logName, "Failed to clone/pull AOSharp.SDK.", isError: true);
+                    return false;
+                }
+            }
+            else if (!Directory.Exists(Path.Combine(sdkLocalPath, ".git")))
+            {
+                if (!await Task.Run(() => CloneOrPull(Config.AoSharpSdkRepoUrl, sdkLocalPath)))
+                {
+                    Report(logName, "Failed to clone AOSharp.SDK.", isError: true);
+                    return false;
+                }
+            }
+
+            await Task.Run(() => AlignCompiledRepoTargetFrameworks(sdkLocalPath, logName));
+
+            var libraryProjects = DiscoverProjects(sdkLocalPath)
+                .Where(p => p.isLibrary)
+                .ToDictionary(p => p.name, p => p.csprojPath, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var projName in AoSharpSdkLibraryBuildOrder)
+            {
+                if (!libraryProjects.TryGetValue(projName, out var csprojPath))
+                    continue;
+
+                await Task.Run(() => InjectReferenceOverrides(sdkLocalPath, compiledLibraries));
+
+                var primaryDll = await Task.Run(() => Build(csprojPath, projName));
+                if (primaryDll == null)
+                {
+                    Report(logName, $"Failed to build SDK library {projName}.", isError: true);
+                    return false;
+                }
+
+                RegisterAoSharpSdkDllsFromOutputDir(compiledLibraries, GetPluginOutputPath(projName));
+            }
+
+            return compiledLibraries.Any(l =>
+                string.Equals(l.packageId, "AOSharp.Core", StringComparison.OrdinalIgnoreCase) &&
+                File.Exists(l.dllPath));
+        }
+
+        /// <summary>Ensures AOSharp.Core exists in the library list before compiling consumer plugins.</summary>
+        private async Task<bool> EnsureAoSharpSdkLibrariesAsync(
+            string logName,
+            List<(string packageId, string dllPath)> compiledLibraries,
+            bool pullFirst)
+        {
+            if (compiledLibraries.Any(l =>
+                    string.Equals(l.packageId, "AOSharp.Core", StringComparison.OrdinalIgnoreCase) &&
+                    File.Exists(l.dllPath)))
+                return true;
+
+            var sdkPath = GetLocalRepoPath(Config.AoSharpSdkRepoUrl);
+            if (!await BuildAoSharpSdkLibraryProjectsAsync(logName, sdkPath, compiledLibraries, pullFirst))
+            {
+                Report(logName, "AOSharp.Core.dll is missing — build AOSharp.SDK libraries in the loader first.", isError: true);
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Writes AOSharpLoader.props / AOSharpLoader.targets into the repo root so MSBuild strips any
+        /// stale <c>Reference</c> whose filename starts with <c>AOSharp.</c> (including strong-named includes)
+        /// and replaces them with local DLL hint paths — same role as NuGet substitution.
         /// </summary>
         public void InjectReferenceOverrides(string localPath, IEnumerable<(string packageId, string dllPath)> localLibraries)
         {
-            var propsPath = Path.Combine(localPath, "AOSharpLoader.props");
-            var sb = new StringBuilder();
-            sb.AppendLine("<Project>");
-            sb.AppendLine("  <ItemGroup>");
+            const string msbuildNs = "http://schemas.microsoft.com/developer/msbuild/2003";
 
-            foreach (var (packageId, dllPath) in localLibraries)
+            var libraries = (localLibraries ?? Enumerable.Empty<(string packageId, string dllPath)>())
+                .Where(t => !string.IsNullOrWhiteSpace(t.packageId) && !string.IsNullOrWhiteSpace(t.dllPath) &&
+                            File.Exists(t.dllPath))
+                .Where(t => IsAoSharpSdkAssemblyStem(t.packageId.Trim()))
+                .Select(t => (packageId: t.packageId.Trim(), dllPath: Path.GetFullPath(t.dllPath.Trim())))
+                .GroupBy(t => t.packageId, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .OrderBy(t => t.packageId, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            Log.Information($"[RepoCompiler] AOSharpLoader injection at '{localPath}': {libraries.Count} SDK DLL(s).");
+            foreach (var (id, path) in libraries)
+                Log.Information($"[RepoCompiler]   {id} -> {path}");
+            if (libraries.Count == 0)
+                Log.Warning("[RepoCompiler] No AOSharp SDK DLL paths to inject — build AOSharp.SDK libraries in the loader first.");
+
+            var propsSb = new StringBuilder();
+            propsSb.AppendLine($"<Project xmlns=\"{msbuildNs}\">");
+            if (libraries.Count > 0)
             {
-                if (!File.Exists(dllPath))
-                    continue;
+                propsSb.AppendLine("  <ItemGroup>");
+                foreach (var (packageId, dllPath) in libraries)
+                {
+                    var idEsc = SecurityElement.Escape(packageId) ?? packageId;
+                    var pathEsc = XmlEscapeHintPath(dllPath);
+                    propsSb.AppendLine($"    <PackageReference Update=\"{idEsc}\" ExcludeAssets=\"all\" PrivateAssets=\"all\" />");
+                    propsSb.AppendLine($"    <Reference Remove=\"{idEsc}\" />");
+                    propsSb.AppendLine($"    <Reference Include=\"{idEsc}\">");
+                    propsSb.AppendLine($"      <HintPath>{pathEsc}</HintPath>");
+                    propsSb.AppendLine("      <Private>false</Private>");
+                    propsSb.AppendLine("    </Reference>");
+                }
 
-                sb.AppendLine($"    <!-- Override {packageId} with local build -->");
-                sb.AppendLine($"    <PackageReference Update=\"{packageId}\" ExcludeAssets=\"all\" PrivateAssets=\"all\" />");
-                sb.AppendLine($"    <Reference Include=\"{packageId}\">");
-                sb.AppendLine($"      <HintPath>{dllPath}</HintPath>");
-                sb.AppendLine($"      <Private>false</Private>");
-                sb.AppendLine($"    </Reference>");
+                propsSb.AppendLine("  </ItemGroup>");
             }
 
-            sb.AppendLine("  </ItemGroup>");
-            sb.AppendLine("</Project>");
-            File.WriteAllText(propsPath, sb.ToString());
+            propsSb.AppendLine("  <Import Project=\"AOSharpLoader.targets\" Condition=\"Exists('AOSharpLoader.targets')\" />");
+            propsSb.AppendLine("</Project>");
+            File.WriteAllText(Path.Combine(localPath, "AOSharpLoader.props"), propsSb.ToString(),
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            var targetsSb = new StringBuilder();
+            targetsSb.AppendLine($"<Project xmlns=\"{msbuildNs}\">");
+            if (libraries.Count > 0)
+            {
+                targetsSb.AppendLine("  <ItemGroup>");
+                foreach (var (packageId, dllPath) in libraries)
+                {
+                    var idEsc = SecurityElement.Escape(packageId) ?? packageId;
+                    var pathEsc = XmlEscapeHintPath(dllPath);
+                    targetsSb.AppendLine($"    <_AoSharpLoaderSdkDll Include=\"{idEsc}\">");
+                    targetsSb.AppendLine($"      <DllHintPath>{pathEsc}</DllHintPath>");
+                    targetsSb.AppendLine("    </_AoSharpLoaderSdkDll>");
+                }
+
+                targetsSb.AppendLine("  </ItemGroup>");
+
+                targetsSb.AppendLine(
+                    "  <Target Name=\"AOSharpLoader_ApplySdkReferences\" BeforeTargets=\"ResolveAssemblyReferences\">");
+                targetsSb.AppendLine("    <ItemGroup>");
+                foreach (var (packageId, _) in libraries)
+                {
+                    var idEsc = SecurityElement.Escape(packageId) ?? packageId;
+                    targetsSb.AppendLine($"      <Reference Remove=\"{idEsc}\" />");
+                }
+
+                targetsSb.AppendLine(
+                    "      <Reference Remove=\"@(Reference)\" Condition=\"'%(Filename)' != '' and $([System.String]::Copy('%(Filename)').StartsWith('AOSharp.'))\" />");
+                targetsSb.AppendLine("    </ItemGroup>");
+                targetsSb.AppendLine("    <ItemGroup>");
+                targetsSb.AppendLine(
+                    "      <Reference Include=\"%(_AoSharpLoaderSdkDll.Identity)\" Condition=\"Exists('%(_AoSharpLoaderSdkDll.DllHintPath)')\">");
+                targetsSb.AppendLine("        <HintPath>%(_AoSharpLoaderSdkDll.DllHintPath)</HintPath>");
+                targetsSb.AppendLine("        <Private>false</Private>");
+                targetsSb.AppendLine("      </Reference>");
+                targetsSb.AppendLine("    </ItemGroup>");
+                targetsSb.AppendLine("  </Target>");
+            }
+
+            targetsSb.AppendLine("</Project>");
+            File.WriteAllText(Path.Combine(localPath, "AOSharpLoader.targets"), targetsSb.ToString(),
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
             var dirBuildProps = Path.Combine(localPath, "Directory.Build.props");
-            string importLine = $"  <Import Project=\"AOSharpLoader.props\" Condition=\"Exists('AOSharpLoader.props')\" />";
+            string importLine =
+                $"  <Import Project=\"AOSharpLoader.props\" Condition=\"Exists('AOSharpLoader.props')\" />";
 
             if (File.Exists(dirBuildProps))
             {
                 var content = File.ReadAllText(dirBuildProps);
-                if (!content.Contains("AOSharpLoader.props"))
+                if (!content.Contains("AOSharpLoader.props", StringComparison.OrdinalIgnoreCase))
                 {
                     content = content.Replace("</Project>", importLine + Environment.NewLine + "</Project>");
-                    File.WriteAllText(dirBuildProps, content);
+                    File.WriteAllText(dirBuildProps, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
                 }
             }
             else
             {
-                File.WriteAllText(dirBuildProps, $"<Project>{Environment.NewLine}{importLine}{Environment.NewLine}</Project>");
+                File.WriteAllText(dirBuildProps,
+                    $"<Project xmlns=\"{msbuildNs}\">{Environment.NewLine}{importLine}{Environment.NewLine}</Project>",
+                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
             }
         }
 
@@ -770,31 +1126,29 @@ namespace AOSharp.Services
                         return false;
                 }
 
-                await Task.Run(() => AlignCompiledRepoTargetFrameworks(depLocal, logName));
-                await Task.Run(() => InjectReferenceOverrides(depLocal, compiledLibraries));
-
-                var depTarget = FindBuildTarget(depLocal);
-                if (depTarget == null)
+                if (string.Equals(depRepoUrl, Config.AoSharpSdkRepoUrl, StringComparison.OrdinalIgnoreCase))
                 {
-                    Report(logName, $"Manifest dependency has no .csproj: {depRepoUrl}", isError: true);
-                    return false;
+                    if (!await BuildAoSharpSdkLibraryProjectsAsync(logName, depLocal, compiledLibraries, pullFirst: false))
+                        return false;
                 }
-
-                var outFolder = GetManifestDependencyOutputFolderName(depRepoUrl);
-                var primaryDll = await Task.Run(() => Build(depTarget, outFolder));
-                if (primaryDll == null)
-                    return false;
-
-                var outputDir = GetPluginOutputPath(outFolder);
-                if (Directory.Exists(outputDir))
+                else
                 {
-                    foreach (var dll in Directory.GetFiles(outputDir, "*.dll", SearchOption.TopDirectoryOnly))
+                    await Task.Run(() => AlignCompiledRepoTargetFrameworks(depLocal, logName));
+                    await Task.Run(() => InjectReferenceOverrides(depLocal, compiledLibraries));
+
+                    var depTarget = FindBuildTarget(depLocal);
+                    if (depTarget == null)
                     {
-                        var id = Path.GetFileNameWithoutExtension(dll);
-                        if (!compiledLibraries.Any(l =>
-                                string.Equals(l.packageId, id, StringComparison.OrdinalIgnoreCase)))
-                            compiledLibraries.Add((id, dll));
+                        Report(logName, $"Manifest dependency has no .csproj: {depRepoUrl}", isError: true);
+                        return false;
                     }
+
+                    var outFolder = GetManifestDependencyOutputFolderName(depRepoUrl);
+                    var primaryDll = await Task.Run(() => Build(depTarget, outFolder));
+                    if (primaryDll == null)
+                        return false;
+
+                    RegisterAoSharpSdkDllsFromOutputDir(compiledLibraries, GetPluginOutputPath(outFolder));
                 }
 
                 completed.Add(depRepoUrl);
@@ -834,15 +1188,19 @@ namespace AOSharp.Services
         /// Compiles all repo plugins. Stubs are expanded to per-project entries.
         /// <paramref name="onGroupComplete"/> is invoked after each repo group finishes
         /// so the caller can apply partial results immediately rather than waiting for all groups.
+        /// <paramref name="precompiledLibraries"/> should be the loader's compiled library plugins (e.g. SDK DLLs from <see cref="Config.GetCompiledLibraryPaths"/>); they override disk discovery like NuGet substitution.
         /// Returns the accumulated CompileResult for all groups.
         /// </summary>
         public async Task<CompileResult> CompileAll(
             IEnumerable<KeyValuePair<string, PluginModel>> plugins,
             bool pullFirst = true,
-            Action<CompileResult> onGroupComplete = null)
+            Action<CompileResult> onGroupComplete = null,
+            IEnumerable<(string packageId, string dllPath)> precompiledLibraries = null)
         {
             var result = new CompileResult();
             var compiledLibraries = new List<(string packageId, string dllPath)>();
+            AddBundledAoSharpSdkDllsWhereMissing(compiledLibraries);
+            MergePrecompiledLibraries(compiledLibraries, precompiledLibraries);
 
             // Group by repo URL; compile libraries first
             var groups = plugins
@@ -905,36 +1263,55 @@ namespace AOSharp.Services
                     continue;
                 }
 
+                // Re-apply loader compiled libraries so SDK paths always win over discovery / other outputs (same as NuGet overrides).
+                MergePrecompiledLibraries(compiledLibraries, precompiledLibraries);
+
+                var isSdkRepo = string.Equals(repoUrl, Config.AoSharpSdkRepoUrl, StringComparison.OrdinalIgnoreCase);
+
+                if (!isSdkRepo)
+                {
+                    if (!await EnsureAoSharpSdkLibrariesAsync(repoName, compiledLibraries, pullFirst))
+                    {
+                        groupResult.AllSucceeded = false;
+                        MergeAndNotify(result, groupResult, onGroupComplete);
+                        continue;
+                    }
+                }
+
                 // Inject reference overrides using everything compiled so far
                 await Task.Run(() => InjectReferenceOverrides(localPath, compiledLibraries));
 
                 await Task.Run(() => AlignCompiledRepoTargetFrameworks(localPath, repoName));
 
-                var buildTarget = FindBuildTarget(localPath);
-                if (buildTarget == null)
+                if (isSdkRepo)
                 {
-                    Report(repoName, "No .csproj found.", isError: true);
-                    groupResult.AllSucceeded = false;
-                    MergeAndNotify(result, groupResult, onGroupComplete);
-                    continue;
+                    if (!await BuildAoSharpSdkLibraryProjectsAsync(repoName, localPath, compiledLibraries, pullFirst: false))
+                    {
+                        groupResult.AllSucceeded = false;
+                        MergeAndNotify(result, groupResult, onGroupComplete);
+                        continue;
+                    }
                 }
-
-                // Build the whole repo into Plugins\{repoName}\
-                var primaryDll = await Task.Run(() => Build(buildTarget, repoName));
-                if (primaryDll == null)
+                else
                 {
-                    groupResult.AllSucceeded = false;
-                    MergeAndNotify(result, groupResult, onGroupComplete);
-                    continue;
-                }
+                    var buildTarget = FindBuildTarget(localPath);
+                    if (buildTarget == null)
+                    {
+                        Report(repoName, "No .csproj found.", isError: true);
+                        groupResult.AllSucceeded = false;
+                        MergeAndNotify(result, groupResult, onGroupComplete);
+                        continue;
+                    }
 
-                // Register all DLLs in the output folder as available local references
-                var outputDir = GetPluginOutputPath(repoName);
-                foreach (var dll in Directory.GetFiles(outputDir, "*.dll", SearchOption.TopDirectoryOnly))
-                {
-                    var id = Path.GetFileNameWithoutExtension(dll);
-                    if (!compiledLibraries.Any(l => l.packageId.Equals(id, StringComparison.OrdinalIgnoreCase)))
-                        compiledLibraries.Add((id, dll));
+                    var primaryDll = await Task.Run(() => Build(buildTarget, repoName));
+                    if (primaryDll == null)
+                    {
+                        groupResult.AllSucceeded = false;
+                        MergeAndNotify(result, groupResult, onGroupComplete);
+                        continue;
+                    }
+
+                    RegisterAoSharpSdkDllsFromOutputDir(compiledLibraries, GetPluginOutputPath(repoName));
                 }
 
                 // Discover per-project entries
@@ -954,7 +1331,10 @@ namespace AOSharp.Services
                         if (groupResult.NewEntries.ContainsKey(key))
                             continue;
 
-                        var dllPath = ResolveProjectDll(projName, outputDir);
+                        var projOutputDir = isSdkRepo
+                            ? GetPluginOutputPath(projName)
+                            : GetPluginOutputPath(repoName);
+                        var dllPath = ResolveProjectDll(projName, projOutputDir);
 
                         groupResult.NewEntries[key] = new PluginModel
                         {
@@ -976,7 +1356,10 @@ namespace AOSharp.Services
                     // Update path on existing project entries
                     foreach (var (key, plugin) in projectEntries)
                     {
-                        var dllPath = ResolveProjectDll(plugin.Name, outputDir);
+                        var projOutputDir = isSdkRepo
+                            ? GetPluginOutputPath(plugin.Name)
+                            : GetPluginOutputPath(repoName);
+                        var dllPath = ResolveProjectDll(plugin.Name, projOutputDir);
                         if (dllPath != null)
                             plugin.Path = dllPath;
                         ApplyManifestToPlugin(plugin, localPath);
@@ -1036,9 +1419,9 @@ namespace AOSharp.Services
                 }
             }
 
-            var combinedLibs = precompiledLibraries != null
-                ? new List<(string packageId, string dllPath)>(precompiledLibraries)
-                : new List<(string packageId, string dllPath)>();
+            var combinedLibs = new List<(string packageId, string dllPath)>();
+            AddBundledAoSharpSdkDllsWhereMissing(combinedLibs);
+            MergePrecompiledLibraries(combinedLibs, precompiledLibraries);
 
             var urlsForThis = GetManifestDependencyUrlsForPlugin(plugin, localPath)
                 .Where(u => !string.Equals(u, plugin.RepoUrl, StringComparison.OrdinalIgnoreCase));
@@ -1049,9 +1432,64 @@ namespace AOSharp.Services
                 return result;
             }
 
+            MergePrecompiledLibraries(combinedLibs, precompiledLibraries);
+
+            var isSdkPlugin = string.Equals(plugin.RepoUrl, Config.AoSharpSdkRepoUrl, StringComparison.OrdinalIgnoreCase);
+            if (!isSdkPlugin)
+            {
+                if (!await EnsureAoSharpSdkLibrariesAsync(plugin.Name, combinedLibs, pullFirst))
+                {
+                    result.AllSucceeded = false;
+                    return result;
+                }
+            }
+
             await Task.Run(() => InjectReferenceOverrides(localPath, combinedLibs));
 
             await Task.Run(() => AlignCompiledRepoTargetFrameworks(localPath, plugin.Name));
+
+            if (isSdkPlugin && plugin.IsLibrary)
+            {
+                if (!await BuildAoSharpSdkLibraryProjectsAsync(plugin.Name, localPath, combinedLibs, pullFirst: false))
+                {
+                    result.AllSucceeded = false;
+                    return result;
+                }
+
+                if (plugin.IsStub)
+                {
+                    result.KeysToRemove.Add(pluginKey);
+                    var discovered = await Task.Run(() => DiscoverProjects(localPath));
+                    foreach (var (projName, csprojPath, projIsLibrary, author, description, depUrls) in discovered)
+                    {
+                        var relPath = Path.GetRelativePath(localPath, csprojPath);
+                        var key = Utils.HashFromString(plugin.RepoUrl + "|" + relPath);
+                        var dllPath = ResolveProjectDll(projName, GetPluginOutputPath(projName));
+                        result.NewEntries[key] = new PluginModel
+                        {
+                            PluginType = PluginType.Repo,
+                            Name = projName,
+                            RepoUrl = plugin.RepoUrl,
+                            ProjectFilePath = csprojPath,
+                            IsLibrary = projIsLibrary,
+                            AutoUpdate = plugin.AutoUpdate,
+                            Path = dllPath ?? string.Empty,
+                            Author = author,
+                            Description = description,
+                            DependencyRepoUrls = depUrls != null ? new List<string>(depUrls) : new List<string>()
+                        };
+                    }
+                }
+                else
+                {
+                    var dllPath = ResolveProjectDll(plugin.Name, GetPluginOutputPath(plugin.Name));
+                    if (dllPath != null)
+                        plugin.Path = dllPath;
+                    ApplyManifestToPlugin(plugin, localPath);
+                }
+
+                return result;
+            }
 
             var buildTarget = FindBuildTarget(localPath);
             if (buildTarget == null)

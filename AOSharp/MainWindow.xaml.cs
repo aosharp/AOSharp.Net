@@ -18,8 +18,9 @@ namespace AOSharp
 
         public MainWindow()
         {
+            string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Log.txt");
             Log.Logger = new LoggerConfiguration()
-                .WriteTo.File("Log.txt", rollingInterval: RollingInterval.Day)
+                .WriteTo.File(logPath, rollingInterval: RollingInterval.Day)
                 .CreateLogger();
 
             _config = Config.Load(Directories.ConfigFilePath);
