@@ -445,9 +445,50 @@ namespace AOSharp.Services
                 RegisterAoSharpSdkDllsFromOutputDir(compiledLibraries, GetPluginOutputPath(projName));
             }
 
+            SyncAoSharpSdkToBootstrapHostFolder(compiledLibraries);
+
             return compiledLibraries.Any(l =>
                 string.Equals(l.packageId, "AOSharp.Core", StringComparison.OrdinalIgnoreCase) &&
                 File.Exists(l.dllPath));
+        }
+
+        /// <summary>
+        /// NativeHost loads from Plugins\AOSharp.Bootstrap. Keep Bootstrap, Common, Core, and Reloaded deps in sync there.
+        /// </summary>
+        private static void SyncAoSharpSdkToBootstrapHostFolder(List<(string packageId, string dllPath)> compiledLibraries)
+        {
+            if (compiledLibraries == null)
+                return;
+
+            var hostDir = GetPluginOutputPath("AOSharp.Bootstrap");
+            Directory.CreateDirectory(hostDir);
+
+            foreach (var projName in AoSharpSdkLibraryBuildOrder)
+            {
+                var entry = compiledLibraries.FirstOrDefault(l =>
+                    string.Equals(l.packageId, projName, StringComparison.OrdinalIgnoreCase));
+                if (string.IsNullOrWhiteSpace(entry.dllPath) || !File.Exists(entry.dllPath))
+                    continue;
+
+                var buildDir = Path.GetDirectoryName(entry.dllPath);
+                if (string.IsNullOrEmpty(buildDir))
+                    continue;
+
+                CopyTopLevelDllsFromBuildOutput(buildDir, hostDir, projName);
+
+                foreach (var ext in new[] { ".deps.json", ".runtimeconfig.json" })
+                {
+                    var src = Path.Combine(buildDir, projName + ext);
+                    if (!File.Exists(src))
+                        continue;
+                    File.Copy(src, Path.Combine(hostDir, projName + ext), overwrite: true);
+                }
+
+                if (string.Equals(projName, "AOSharp.Bootstrap", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                EnsureBootstrapRuntimeConfig(hostDir, "AOSharp.Bootstrap");
+            }
         }
 
         /// <summary>Ensures AOSharp.Core exists in the library list before compiling consumer plugins.</summary>
@@ -943,7 +984,7 @@ namespace AOSharp.Services
 
             try
             {
-                CopyTopLevelDllsFromBuildOutput(Path.GetDirectoryName(builtDll), pluginOutputDir);
+                CopyTopLevelDllsFromBuildOutput(Path.GetDirectoryName(builtDll), pluginOutputDir, outputName);
             }
             catch (Exception ex)
             {
@@ -956,8 +997,12 @@ namespace AOSharp.Services
             return File.Exists(deployed) ? deployed : builtDll;
         }
 
-        /// <summary>Copies every DLL from the project's build output directory into the plugin folder (top-level only, no ref/).</summary>
-        private static void CopyTopLevelDllsFromBuildOutput(string buildOutDir, string pluginOutputDir)
+        /// <summary>
+        /// Copies runtime artifacts from the project's build output into Plugins\{outputName}\.
+        /// Skips other AOSharp.SDK DLLs so a Common build does not drop Core into Plugins\Common.
+        /// Includes runtimeconfig/deps for NativeHost (AOSharp.Bootstrap).
+        /// </summary>
+        private static void CopyTopLevelDllsFromBuildOutput(string buildOutDir, string pluginOutputDir, string outputName)
         {
             if (string.IsNullOrEmpty(buildOutDir) || !Directory.Exists(buildOutDir))
                 return;
@@ -965,9 +1010,62 @@ namespace AOSharp.Services
             Directory.CreateDirectory(pluginOutputDir);
             foreach (var dll in Directory.GetFiles(buildOutDir, "*.dll", SearchOption.TopDirectoryOnly))
             {
+                var stem = Path.GetFileNameWithoutExtension(dll);
+                if (IsAoSharpSdkAssemblyStem(stem) &&
+                    !string.Equals(stem, outputName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
                 var dest = Path.Combine(pluginOutputDir, Path.GetFileName(dll));
                 File.Copy(dll, dest, overwrite: true);
             }
+
+            if (string.IsNullOrEmpty(outputName))
+                return;
+
+            foreach (var ext in new[] { ".runtimeconfig.json", ".deps.json" })
+            {
+                var src = Path.Combine(buildOutDir, outputName + ext);
+                if (!File.Exists(src))
+                    continue;
+                File.Copy(src, Path.Combine(pluginOutputDir, outputName + ext), overwrite: true);
+            }
+
+            if (string.Equals(outputName, "AOSharp.Bootstrap", StringComparison.OrdinalIgnoreCase))
+                EnsureBootstrapRuntimeConfig(pluginOutputDir, outputName);
+        }
+
+        /// <summary>
+        /// hostfxr requires AOSharp.Bootstrap.runtimeconfig.json; library projects omit it unless GenerateRuntimeConfigurationFiles is set.
+        /// </summary>
+        private static void EnsureBootstrapRuntimeConfig(string pluginOutputDir, string assemblyName)
+        {
+            var path = Path.Combine(pluginOutputDir, assemblyName + ".runtimeconfig.json");
+            if (File.Exists(path))
+                return;
+
+            var loaderTfm = GetLoaderTargetFramework();
+            var m = Regex.Match(loaderTfm ?? "", @"net(\d+)\.(\d+)", RegexOptions.IgnoreCase);
+            var major = m.Success ? m.Groups[1].Value : "10";
+            var minor = m.Success ? m.Groups[2].Value : "0";
+
+            var json =
+                "{\r\n" +
+                "  \"runtimeOptions\": {\r\n" +
+                $"    \"tfm\": \"net{major}.{minor}\",\r\n" +
+                "    \"rollForward\": \"LatestMinor\",\r\n" +
+                "    \"framework\": {\r\n" +
+                "      \"name\": \"Microsoft.NETCore.App\",\r\n" +
+                $"      \"version\": \"{major}.{minor}.0\"\r\n" +
+                "    },\r\n" +
+                "    \"configProperties\": {\r\n" +
+                "      \"System.Reflection.Metadata.MetadataUpdater.IsSupported\": false,\r\n" +
+                "      \"System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization\": false\r\n" +
+                "    }\r\n" +
+                "  }\r\n" +
+                "}\r\n";
+
+            Directory.CreateDirectory(pluginOutputDir);
+            File.WriteAllText(path, json);
         }
 
         private static string TryProbeDefaultBuildOutputDll(string csprojPath, string assemblyName)
