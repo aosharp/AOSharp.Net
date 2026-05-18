@@ -41,7 +41,7 @@ namespace AOSharp
         /// <summary>From Manifest.json (optional).</summary>
         public string Description { get; set; }
 
-        /// <summary>Repository URLs from Manifest.json; cloned and built before this project.</summary>
+        /// <summary>Manifest.json dependencies (repo URLs and/or <c>.csproj</c> paths); built before this project.</summary>
         public List<string> DependencyRepoUrls { get; set; }
 
         /// <summary>
@@ -87,6 +87,12 @@ namespace AOSharp
         /// </summary>
         public string Section { get; set; }
 
+        /// <summary>
+        /// Added automatically from another plugin's manifest <c>dependencies</c> (not user-installed).
+        /// Pruned when no plugin references it; cannot be removed while referenced.
+        /// </summary>
+        public bool IsManifestDependency { get; set; }
+
         [JsonIgnore]
         public bool IsDefault { get; set; }
 
@@ -129,7 +135,7 @@ namespace AOSharp
 
         private void Remove(object obj)
         {
-            if (IsDefault)
+            if (IsDefault || IsManifestDependency)
                 return;
 
             var args = (Tuple<ObservableDictionary<string, PluginModel>, string>)obj;

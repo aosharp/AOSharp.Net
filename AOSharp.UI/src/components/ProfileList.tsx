@@ -1,12 +1,14 @@
 import { sendToHost } from '../bridge';
-import { selectProfiles, useStore } from '../store';
+import { selectProfiles, selectUiLocked, useStore } from '../store';
 
 export function ProfileList() {
   const allProfiles = useStore(selectProfiles);
   const activeProfileId = useStore((s) => s.activeProfileId);
+  const uiLocked = useStore(selectUiLocked);
   const profiles = allProfiles.filter((p) => p.isActive);
 
   function handleSelect(id: string) {
+    if (uiLocked) return;
     sendToHost({ type: 'selectProfile', profileId: id });
   }
 
@@ -30,6 +32,7 @@ export function ProfileList() {
         <button
           key={p.id}
           onClick={() => handleSelect(p.id)}
+          disabled={uiLocked}
           style={{
             background: p.id === activeProfileId ? 'var(--color-surface-hover)' : 'transparent',
             border: 'none',
@@ -40,7 +43,8 @@ export function ProfileList() {
             color: p.isInjected ? 'var(--color-green)' : 'var(--color-text)',
             textAlign: 'left',
             padding: '8px 12px',
-            cursor: 'pointer',
+            cursor: uiLocked ? 'not-allowed' : 'pointer',
+            opacity: uiLocked ? 0.45 : 1,
             fontSize: 13,
             width: '100%',
           }}

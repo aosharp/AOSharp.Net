@@ -13,10 +13,16 @@ namespace AOSharp
     {
         public const string AoSharpSdkKey = "aosharp-sdk-default";
         public const string AoSharpSdkRepoUrl = "https://github.com/aosharp/AOSharp.SDK";
+        public const string DefaultLoadoutId = "00000000-0000-0000-0000-000000000001";
+        public const string DefaultLoadoutName = "Default";
 
         public ObservableDictionary<string, PluginModel> Plugins { get; set; }
 
         public ObservableCollection<Profile> Profiles { get; set; }
+
+        public ObservableCollection<Loadout> Loadouts { get; set; }
+
+        public bool AutoInject { get; set; }
 
         protected string _path;
 
@@ -33,12 +39,20 @@ namespace AOSharp
                 config = new Config()
                 {
                     Plugins = new ObservableDictionary<string, PluginModel>(),
-                    Profiles = new ObservableCollection<Profile>()
+                    Profiles = new ObservableCollection<Profile>(),
+                    Loadouts = new ObservableCollection<Loadout>(),
+                    AutoInject = false
                 };
             }
 
+            if (config.Plugins == null)
+                config.Plugins = new ObservableDictionary<string, PluginModel>();
+            if (config.Profiles == null)
+                config.Profiles = new ObservableCollection<Profile>();
+
             config._path = path;
             config.EnsureDefaults();
+            config.EnsureLoadouts();
 
             return config;
         }
@@ -54,6 +68,31 @@ namespace AOSharp
         /// Works whether the SDK exists as a single stub or has been expanded to per-project entries.
         /// </summary>
         public void EnsureDefaultsPublic() => EnsureDefaults();
+
+        public Loadout GetDefaultLoadout() =>
+            Loadouts.First(l => l.Id == DefaultLoadoutId);
+
+        private void EnsureLoadouts()
+        {
+            if (Loadouts == null)
+                Loadouts = new ObservableCollection<Loadout>();
+
+            if (!Loadouts.Any(l => l.Id == DefaultLoadoutId))
+            {
+                Loadouts.Insert(0, new Loadout
+                {
+                    Id = DefaultLoadoutId,
+                    Name = DefaultLoadoutName,
+                    PluginKeys = new List<string>()
+                });
+            }
+
+            foreach (var profile in Profiles ?? Enumerable.Empty<Profile>())
+            {
+                if (string.IsNullOrEmpty(profile.LoadoutId))
+                    profile.LoadoutId = DefaultLoadoutId;
+            }
+        }
 
         private void EnsureDefaults()
         {

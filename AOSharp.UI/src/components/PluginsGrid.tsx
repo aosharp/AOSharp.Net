@@ -1,9 +1,19 @@
-import type { Plugin } from '../types';
+﻿import type { Plugin } from '../types';
 import { sendToHost } from '../bridge';
-import { selectActiveProfile, selectPluginsMap, selectProfiles, useStore } from '../store';
+import { selectPluginsMap, selectProfiles, selectUiLocked, useStore } from '../store';
 import { getPluginSection, PLUGIN_SECTIONS, type PluginSection } from '../pluginSections';
 import { Fragment, useState, useEffect, useMemo } from 'react';
 import '../index.css';
+import { LockIcon } from './LockIcon';
+import {
+  ArrowUpIcon,
+  CheckIcon,
+  CrossIcon,
+  EmptyCellIcon,
+  EmDashIcon,
+  LoadoutDotIcon,
+  WarningIcon,
+} from './PluginGridIcons';
 
 interface ContextMenu {
   x: number;
@@ -18,14 +28,18 @@ interface PendingUpdate {
 }
 
 const COLUMN_COUNT = 7;
+const DIMMED_ROW_OPACITY = 0.42;
+const DIMMED_ROW_HOVER_OPACITY = 0.62;
 
 export function PluginsGrid() {
-  const activeProfile = useStore(selectActiveProfile);
   const profiles = useStore(selectProfiles);
+  const loadouts = useStore((s) => s.loadouts);
   const pluginsMap = useStore(selectPluginsMap);
   const isLoading = useStore((s) => s.isLoading);
+  const uiLocked = useStore(selectUiLocked);
   const isCompiling = useStore((s) => s.isCompiling);
   const compileProgress = useStore((s) => s.compileProgress);
+  const activeProfileId = useStore((s) => s.activeProfileId);
   const pluginsBySection = useMemo(() => {
     const grouped = new Map<PluginSection, [string, Plugin][]>();
     for (const section of PLUGIN_SECTIONS) grouped.set(section, []);
@@ -48,18 +62,21 @@ export function PluginsGrid() {
     if (pendingUpdate) setTrustRepoOnUpdate(false);
   }, [pendingUpdate]);
 
+  useEffect(() => {
+    if (uiLocked) {
+      setCtx(null);
+      setPendingUpdate(null);
+    }
+  }, [uiLocked]);
+
   const injectedPluginKeys = new Set(
-    profiles.filter((p) => p.isInjected).flatMap((p) => p.enabledPlugins)
+    profiles
+      .filter((p) => p.isInjected)
+      .flatMap((p) => loadouts.find((l) => l.id === p.loadoutId)?.pluginKeys ?? [])
   );
 
-  const hasActiveProfile = activeProfile !== null;
-
-  function handleToggle(key: string, enabled: boolean) {
-    if (!hasActiveProfile) return;
-    sendToHost({ type: 'togglePlugin', key, enabled });
-  }
-
   function handleContextMenu(e: React.MouseEvent, key: string, plugin: Plugin) {
+    if (uiLocked) return;
     e.preventDefault();
     setCtx({ x: e.clientX, y: e.clientY, pluginKey: key, plugin });
   }
@@ -99,13 +116,16 @@ export function PluginsGrid() {
     padding: '5px 8px',
     fontSize: 12,
     color: plugin.path?.includes('\\obj\\') ? 'var(--color-red)' : 'var(--color-text)',
-    fontStyle: plugin.isDefault ? 'italic' : 'normal',
+    fontStyle: plugin.isDefault || plugin.isManifestDependency ? 'italic' : 'normal',
   });
 
   const tdStyle = (plugin: Plugin): React.CSSProperties => ({
     ...tdBase(plugin),
     ...fitColStyle,
   });
+
+  const isRowDimmed = (plugin: Plugin) =>
+    activeProfileId != null && !plugin.isEnabled;
 
   const sectionHeaderStyle: React.CSSProperties = {
     padding: '8px 8px 4px',
@@ -136,7 +156,7 @@ export function PluginsGrid() {
       >
         <thead>
           <tr>
-            <th style={{ ...thStyle, ...fitColStyle }}>Enabled</th>
+            <th style={{ ...thStyle, ...fitColStyle }}>In loadout</th>
             <th style={{ ...thStyle, ...fitColStyle }}>Name</th>
             <th style={{ ...thStyle, ...fitColStyle }}>Commit</th>
             <th style={{ ...thStyle, ...fitColStyle }}>Source</th>
@@ -156,28 +176,39 @@ export function PluginsGrid() {
                     {section}
                   </td>
                 </tr>
-                {plugins.map(([key, plugin]) => (
+                {plugins.map(([key, plugin]) => {
+                  const dimmed = isRowDimmed(plugin);
+                  return (
                   <tr
                     key={key}
                     onContextMenu={(e) => handleContextMenu(e, key, plugin)}
-                    style={{ cursor: 'default' }}
-                    onMouseEnter={(e) =>
-                      (e.currentTarget.style.background = 'var(--color-surface-hover)')
-                    }
-                    onMouseLeave={(e) =>
-                      (e.currentTarget.style.background = 'transparent')
-                    }
+                    style={{
+                      cursor: 'default',
+                      opacity: dimmed ? DIMMED_ROW_OPACITY : 1,
+                      transition: 'opacity 0.12s ease, background 0.12s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'var(--color-surface-hover)';
+                      if (dimmed) e.currentTarget.style.opacity = String(DIMMED_ROW_HOVER_OPACITY);
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'transparent';
+                      e.currentTarget.style.opacity = dimmed ? String(DIMMED_ROW_OPACITY) : '1';
+                    }}
                   >
                     <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
-                      {!plugin.isLibrary && (
-                        <input
-                          type="checkbox"
-                          checked={plugin.isEnabled}
-                          disabled={!hasActiveProfile}
-                          title={!hasActiveProfile ? 'Select a profile to enable/disable plugins' : undefined}
-                          onChange={(e) => handleToggle(key, e.target.checked)}
-                          style={{ cursor: hasActiveProfile ? 'pointer' : 'default' }}
-                        />
+                      {!plugin.isLibrary && plugin.isEnabled && (
+                        <span
+                          title="In active character loadout"
+                          style={{
+                            color: 'var(--color-accent)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <LoadoutDotIcon size={10} />
+                        </span>
                       )}
                     </td>
                     <td style={tdStyle(plugin)}>
@@ -206,16 +237,26 @@ export function PluginsGrid() {
                       {plugin.pluginType === 'Repo' ? (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                           <span style={{ fontFamily: 'monospace', color: 'var(--color-text-muted)' }}>
-                            {plugin.localCommit ?? '—'}
+                            {plugin.localCommit ?? <EmptyCellIcon />}
                           </span>
                           {plugin.remoteCommit && plugin.remoteCommit !== plugin.localCommit && (
-                            <span style={{ fontFamily: 'monospace', color: '#f0c060', fontSize: 11 }}>
-                              ↑ {plugin.remoteCommit}
+                            <span
+                              style={{
+                                fontFamily: 'monospace',
+                                color: '#f0c060',
+                                fontSize: 11,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4,
+                              }}
+                            >
+                              <ArrowUpIcon size={11} />
+                              {plugin.remoteCommit}
                             </span>
                           )}
                         </div>
                       ) : (
-                        <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+                        <EmptyCellIcon />
                       )}
                     </td>
                     <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
@@ -230,16 +271,23 @@ export function PluginsGrid() {
                             style={{ width: 12, height: 12, borderWidth: 2, display: 'inline-block' }}
                           />
                         ) : (
-                          <span style={{ color: plugin.isCompiled ? 'var(--color-green)' : 'var(--color-red)' }}>
-                            {plugin.isCompiled ? '✓' : '✗'}
+                          <span
+                            style={{
+                              color: plugin.isCompiled ? 'var(--color-green)' : 'var(--color-red)',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                          >
+                            {plugin.isCompiled ? <CheckIcon size={14} /> : <CrossIcon size={14} />}
                           </span>
                         )
                       ) : (
-                        <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+                        <EmptyCellIcon />
                       )}
                     </td>
                     <td style={tdStyle(plugin)} title={(plugin.author ?? '').trim() || undefined}>
-                      {(plugin.author ?? '').trim() || '—'}
+                      {(plugin.author ?? '').trim() || <EmptyCellIcon />}
                     </td>
                     <td
                       style={{
@@ -250,10 +298,11 @@ export function PluginsGrid() {
                       }}
                       title={(plugin.description ?? '').trim() || undefined}
                     >
-                      {(plugin.description ?? '').trim() || '—'}
+                      {(plugin.description ?? '').trim() || <EmptyCellIcon />}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </Fragment>
             );
           })}
@@ -277,10 +326,11 @@ export function PluginsGrid() {
         >
           {ctx.plugin.pluginType === 'Repo' && ctx.plugin.hasUpdate && (() => {
             const blocked = injectedPluginKeys.has(ctx.pluginKey);
+            const lockTitle = blocked ? 'Eject before updating' : undefined;
             return (
               <button
                 onClick={() => !blocked && handleUpdateClick(ctx.pluginKey, ctx.plugin)}
-                title={blocked ? 'Eject before updating' : undefined}
+                title={lockTitle}
                 style={{
                   ...menuItemStyle,
                   color: blocked ? 'var(--color-text-muted)' : '#f0c060',
@@ -288,7 +338,11 @@ export function PluginsGrid() {
                   opacity: blocked ? 0.5 : 1,
                 }}
               >
-                ↑ Update Available{blocked ? ' 🔒' : ''}
+                <span style={{ flex: 1, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <ArrowUpIcon size={12} />
+                  Update Available
+                </span>
+                {blocked && <MenuLock title={lockTitle} />}
               </button>
             );
           })()}
@@ -318,7 +372,11 @@ export function PluginsGrid() {
             </button>
           )}
           {!ctx.plugin.isDefault && (() => {
-            const blocked = injectedPluginKeys.has(ctx.pluginKey);
+            const injected = injectedPluginKeys.has(ctx.pluginKey);
+            const blocked = injected || !ctx.plugin.canRemove;
+            const removeTitle = injected
+              ? 'Eject before removing'
+              : ctx.plugin.removeBlockedReason ?? undefined;
             return (
               <>
                 <div style={{ height: 1, background: 'var(--color-border)', margin: '3px 0' }} />
@@ -328,7 +386,7 @@ export function PluginsGrid() {
                     sendToHost({ type: 'removePlugin', key: ctx.pluginKey });
                     closeCtx();
                   }}
-                  title={blocked ? 'Eject before removing' : undefined}
+                  title={removeTitle}
                   style={{
                     ...menuItemStyle,
                     color: blocked ? 'var(--color-text-muted)' : 'var(--color-red)',
@@ -336,7 +394,8 @@ export function PluginsGrid() {
                     opacity: blocked ? 0.5 : 1,
                   }}
                 >
-                  Remove{blocked ? ' 🔒' : ''}
+                  <span style={{ flex: 1 }}>Remove</span>
+                  {blocked && <MenuLock title={removeTitle} />}
                 </button>
               </>
             );
@@ -369,8 +428,18 @@ export function PluginsGrid() {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#f0c060' }}>
-              ⚠ Confirm Update: {pendingUpdate.plugin.name}
+            <h4
+              style={{
+                margin: '0 0 12px',
+                fontSize: 14,
+                color: '#f0c060',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+              }}
+            >
+              <WarningIcon size={16} />
+              Confirm Update: {pendingUpdate.plugin.name}
             </h4>
             <p style={{ margin: '0 0 8px', fontSize: 13, color: 'var(--color-text-muted)', wordBreak: 'break-all' }}>
               {pendingUpdate.plugin.repoUrl}
@@ -419,9 +488,15 @@ export function PluginsGrid() {
                   padding: '6px 14px',
                   cursor: 'pointer',
                   fontSize: 13,
+                  display: 'inline-flex',
+                  alignItems: 'center',
                 }}
               >
-                I have verified — Update
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  I have verified
+                  <EmDashIcon size={12} />
+                  Update
+                </span>
               </button>
               <button
                 onClick={() => setPendingUpdate(null)}
@@ -446,7 +521,9 @@ export function PluginsGrid() {
 }
 
 const menuItemStyle: React.CSSProperties = {
-  display: 'block',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
   width: '100%',
   background: 'none',
   border: 'none',
@@ -456,3 +533,11 @@ const menuItemStyle: React.CSSProperties = {
   cursor: 'pointer',
   fontSize: 13,
 };
+
+function MenuLock({ title }: { title?: string }) {
+  return (
+    <span style={{ color: '#f0c060', display: 'flex', flexShrink: 0 }} title={title}>
+      <LockIcon />
+    </span>
+  );
+}

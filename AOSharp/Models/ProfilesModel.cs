@@ -48,10 +48,15 @@ namespace AOSharp.Models
                 {
                     profile = new Profile()
                     {
-                        Name = splitTitle[1]
+                        Name = splitTitle[1],
+                        LoadoutId = Config.DefaultLoadoutId
                     };
 
                     Profiles.Add(profile);
+                }
+                else if (string.IsNullOrEmpty(profile.LoadoutId))
+                {
+                    profile.LoadoutId = Config.DefaultLoadoutId;
                 }
 
                 profile.IsActive = true;

@@ -33,7 +33,20 @@ namespace AOSharp
 
         private Profile _activeProfile;
         private bool _isCompiling;
+        private readonly List<InjectJob> _injectJobs = new List<InjectJob>();
+        private readonly object _injectJobsLock = new object();
+        private readonly System.Threading.SemaphoreSlim _manifestDependencyLock =
+            new System.Threading.SemaphoreSlim(1, 1);
         private Timer _updateCheckTimer;
+        private readonly HashSet<string> _previouslyActiveProfileNames = new HashSet<string>();
+
+        private sealed class InjectJob
+        {
+            public string ProfileId { get; set; }
+            public string ProfileName { get; set; }
+            public string Status { get; set; }
+            public string Message { get; set; }
+        }
 
         public WebMessageBridge(
             Microsoft.Web.WebView2.Wpf.WebView2 webView,
@@ -50,8 +63,7 @@ namespace AOSharp
 
             _repoCompiler.Progress += OnCompileProgress;
 
-            // Push state whenever the timer refreshes profiles
-            profilesModel.ProfilesRefreshed += (_, _) => SendState();
+            profilesModel.ProfilesRefreshed += (_, _) => OnProfilesRefreshed();
 
             // Push state whenever plugins collection changes
             _config.Plugins.CollectionChanged += (_, _) =>
@@ -103,12 +115,13 @@ namespace AOSharp
                     case "selectProfile":
                         _activeProfile = _profilesModel.Profiles
                             .FirstOrDefault(p => p.Name == msg.ProfileId);
-                        ApplyEnabledPlugins();
+                        ApplyActiveLoadoutHighlight();
                         SendState();
                         break;
 
                     case "inject":
-                        await HandleInjectAsync();
+                        if (_activeProfile != null)
+                            _ = TryInjectProfileAsync(_activeProfile);
                         break;
 
                     case "eject":
@@ -140,7 +153,7 @@ namespace AOSharp
                         break;
 
                     case "addRepoPlugin":
-                        HandleAddRepoPlugin(msg.Url, msg.ProjectFilePath);
+                        await HandleAddRepoPluginAsync(msg.Url, msg.ProjectFilePath);
                         break;
 
                     case "removePlugin":
@@ -155,8 +168,28 @@ namespace AOSharp
                         _dispatcher.Invoke(HandleOpenLogFile);
                         break;
 
-                    case "togglePlugin":
-                        HandleTogglePlugin(msg.Key, msg.Enabled);
+                    case "assignLoadout":
+                        HandleAssignLoadout(msg.ProfileId, msg.LoadoutId);
+                        break;
+
+                    case "createLoadout":
+                        HandleCreateLoadout(msg.Name, msg.PluginKeys, msg.SourceLoadoutId);
+                        break;
+
+                    case "updateLoadout":
+                        HandleUpdateLoadout(msg.LoadoutId, msg.Name, msg.PluginKeys);
+                        break;
+
+                    case "deleteLoadout":
+                        HandleDeleteLoadout(msg.LoadoutId);
+                        break;
+
+                    case "duplicateLoadout":
+                        HandleDuplicateLoadout(msg.LoadoutId, msg.Name);
+                        break;
+
+                    case "setAutoInject":
+                        HandleSetAutoInject(msg.Enabled);
                         break;
 
                     case "browseDll":
@@ -250,43 +283,221 @@ namespace AOSharp
             }
         }
 
-        private async Task HandleInjectAsync()
+        private Loadout GetLoadoutForProfile(Profile profile)
         {
-            if (_activeProfile == null) return;
+            if (profile == null || string.IsNullOrEmpty(profile.LoadoutId))
+                return null;
+            return _config.Loadouts.FirstOrDefault(l => l.Id == profile.LoadoutId);
+        }
 
-            var plugins = _config.Plugins
-                .Where(x =>
-                    _activeProfile.EnabledPlugins.Contains(x.Key) &&
-                    !x.Value.IsLibrary &&
-                    x.Value.IsCompiled)
-                .Select(x => x.Value.Path);
+        private IEnumerable<string> ResolveInjectPaths(Loadout loadout)
+        {
+            if (loadout?.PluginKeys == null)
+                yield break;
 
-            if (!plugins.Any())
+            foreach (var key in loadout.PluginKeys)
             {
-                SendToast("error", "Inject", "No compiled, non-library plugins are selected.");
-                return;
+                if (!_config.Plugins.TryGetValue(key, out var plugin))
+                    continue;
+                if (plugin.IsLibrary || !plugin.IsCompiled)
+                    continue;
+                if (string.IsNullOrEmpty(plugin.Path))
+                    continue;
+                yield return plugin.Path;
+            }
+        }
+
+        private bool HasUncompiledLoadoutPlugins(Loadout loadout)
+        {
+            if (loadout?.PluginKeys == null)
+                return false;
+
+            return loadout.PluginKeys.Any(key =>
+                _config.Plugins.TryGetValue(key, out var plugin) &&
+                !plugin.IsLibrary &&
+                !plugin.IsCompiled);
+        }
+
+        private bool IsInjecting
+        {
+            get
+            {
+                lock (_injectJobsLock)
+                    return _injectJobs.Any(j =>
+                        j.Status == "pending" || j.Status == "injecting");
+            }
+        }
+
+        private List<object> SnapshotInjectQueue()
+        {
+            lock (_injectJobsLock)
+            {
+                return _injectJobs
+                    .Select(j => (object)new
+                    {
+                        profileId = j.ProfileId,
+                        profileName = j.ProfileName,
+                        status = j.Status,
+                        message = j.Message
+                    })
+                    .ToList();
+            }
+        }
+
+        private void SendInjectProgress()
+        {
+            PostMessage(new
+            {
+                type = "injectProgress",
+                isInjecting = IsInjecting,
+                queue = SnapshotInjectQueue()
+            });
+        }
+
+        private bool TryEnqueueInjectJob(Profile profile, out string error)
+        {
+            error = null;
+            if (profile == null || profile.IsInjected)
+                return false;
+
+            lock (_injectJobsLock)
+            {
+                if (_injectJobs.Any(j =>
+                        j.ProfileId == profile.Name &&
+                        (j.Status == "pending" || j.Status == "injecting")))
+                    return false;
+
+                _injectJobs.Add(new InjectJob
+                {
+                    ProfileId = profile.Name,
+                    ProfileName = profile.Name,
+                    Status = "pending",
+                    Message = "Queued"
+                });
             }
 
-            if (!RepoCompiler.ApplyPendingBootstrapSdkUpdates())
+            SendInjectProgress();
+            return true;
+        }
+
+        private void SetInjectJobStatus(string profileId, string status, string message)
+        {
+            lock (_injectJobsLock)
+            {
+                var job = _injectJobs.FirstOrDefault(j => j.ProfileId == profileId);
+                if (job == null)
+                    return;
+                job.Status = status;
+                if (message != null)
+                    job.Message = message;
+            }
+
+            _dispatcher.BeginInvoke(SendInjectProgress);
+        }
+
+        private void RemoveInjectJob(string profileId)
+        {
+            lock (_injectJobsLock)
+                _injectJobs.RemoveAll(j => j.ProfileId == profileId);
+
+            _dispatcher.BeginInvoke(() =>
+            {
+                SendInjectProgress();
+                SendState();
+            });
+        }
+
+        private async Task<bool> TryInjectProfileAsync(Profile profile)
+        {
+            if (profile == null || profile.IsInjected)
+                return false;
+
+            var loadout = GetLoadoutForProfile(profile);
+            if (loadout == null)
+            {
+                SendToast("error", "Inject", "No loadout assigned to this character.");
+                return false;
+            }
+
+            if (HasUncompiledLoadoutPlugins(loadout))
             {
                 SendToast("error", "Inject",
-                    "Updated AOSharp.SDK files are in Plugins\\AOSharp.Bootstrap\\.update-staging but could not be applied. Close any other AOSharp instance and try again, or restart the loader.");
-                return;
+                    "One or more plugins in this loadout are not compiled. Compile them first.");
+                return false;
             }
 
-            bool ok = _activeProfile.Inject(plugins);
+            var pluginPaths = ResolveInjectPaths(loadout).ToList();
+            if (!TryEnqueueInjectJob(profile, out _))
+                return false;
 
-            if (!ok)
-                SendToast("error", "Inject", "Failed to inject.");
+            _ = RunInjectJobAsync(profile, pluginPaths);
+            return true;
+        }
 
-            // Hook disconnect so we push state when pipe drops
-            _activeProfile.PropertyChanged += (s, e) =>
+        private async Task RunInjectJobAsync(Profile profile, List<string> pluginPaths)
+        {
+            var profileId = profile.Name;
+            try
             {
-                if (e.PropertyName == nameof(Profile.IsInjected))
-                    SendState();
-            };
+                SetInjectJobStatus(profileId, "injecting", "Preparing…");
 
-            SendState();
+                bool sdkOk = await Task.Run(RepoCompiler.ApplyPendingBootstrapSdkUpdates);
+                if (!sdkOk)
+                {
+                    SetInjectJobStatus(profileId, "failed",
+                        "AOSharp.SDK update could not be applied. Restart the loader.");
+                    SendToast("error", "Inject",
+                        "Updated AOSharp.SDK files are in Plugins\\AOSharp.Bootstrap\\.update-staging but could not be applied. Close any other AOSharp instance and try again, or restart the loader.");
+                    return;
+                }
+
+                SetInjectJobStatus(profileId, "injecting", "Injecting bootstrap…");
+                bool ok = await Task.Run(() => profile.Inject(pluginPaths));
+
+                if (!ok)
+                {
+                    SetInjectJobStatus(profileId, "failed", "Injection failed");
+                    SendToast("error", "Inject", $"Failed to inject {profile.Name}.");
+                    return;
+                }
+
+                _dispatcher.Invoke(() =>
+                {
+                    EnsureProfileInConfig(profile);
+                    _config.Save();
+                    profile.PropertyChanged -= OnProfilePropertyChanged;
+                    profile.PropertyChanged += OnProfilePropertyChanged;
+                    SendState();
+                });
+
+                SetInjectJobStatus(profileId, "succeeded", "Injected");
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"[Bridge] Inject failed for {profileId}: {ex.Message}");
+                SetInjectJobStatus(profileId, "failed", ex.Message);
+                SendToast("error", "Inject", ex.Message);
+            }
+            finally
+            {
+                await Task.Delay(400);
+                RemoveInjectJob(profileId);
+            }
+        }
+
+        private void OnProfilePropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(Profile.IsInjected))
+                SendState();
+        }
+
+        private void EnsureProfileInConfig(Profile profile)
+        {
+            if (profile == null)
+                return;
+
+            if (!_config.Profiles.Any(p => p.Name == profile.Name))
+                _config.Profiles.Add(profile);
         }
 
         private void HandleEject()
@@ -296,10 +507,7 @@ namespace AOSharp
             _ = Task.Run(async () =>
             {
                 await Task.Delay(750);
-                if (RepoCompiler.ApplyPendingBootstrapSdkUpdates())
-                    _dispatcher.Invoke(() =>
-                        SendToast("info", "AOSharp.SDK",
-                            "Staged AOSharp.SDK files were applied to Plugins\\AOSharp.Bootstrap."));
+                RepoCompiler.ApplyPendingBootstrapSdkUpdates();
             });
         }
 
@@ -311,11 +519,38 @@ namespace AOSharp
 
             try
             {
+                var toCompile = _config.Plugins
+                    .Where(p => p.Value.PluginType == PluginType.Repo && !RepoCompiler.HasCompiledOutput(p.Value))
+                    .ToList();
+
+                if (toCompile.Count == 0)
+                {
+                    SendToast("info", "Compile Plugins", "All plugins are already compiled.");
+                    return;
+                }
+
+                var consumers = toCompile
+                    .Where(p => !p.Value.IsManifestDependency)
+                    .Select(p => p.Value)
+                    .ToList();
+                await EnsureManifestDependenciesForConsumersAsync(consumers, pullFirst: false);
+
+                toCompile = _config.Plugins
+                    .Where(p => p.Value.PluginType == PluginType.Repo && !RepoCompiler.HasCompiledOutput(p.Value))
+                    .ToList();
+
+                if (toCompile.Count == 0)
+                {
+                    SendToast("info", "Compile Plugins", "All plugins are already compiled.");
+                    return;
+                }
+
                 var result = await _repoCompiler.CompileAll(
-                    _config.Plugins.ToList(),
+                    toCompile,
                     pullFirst: false,
                     onGroupComplete: partial => _dispatcher.Invoke(() => ApplyCompileResult(partial)),
-                    precompiledLibraries: _config.GetCompiledLibraryPaths());
+                    precompiledLibraries: _config.GetCompiledLibraryPaths(),
+                    forceRebuild: false);
 
                 if (result.AllSucceeded)
                 {
@@ -338,22 +573,39 @@ namespace AOSharp
         private async Task HandleCompilePluginAsync(string key)
         {
             if (key == null || !_config.Plugins.TryGetValue(key, out var plugin)) return;
+            if (_isCompiling) return;
+
+            _isCompiling = true;
+            SendState();
+            PostMessage(new { type = "compileProgress", pluginName = plugin.Name, message = "Compiling..." });
 
             try
             {
+                if (!plugin.IsManifestDependency)
+                    await EnsureManifestDependenciesForConsumersAsync(new[] { plugin }, pullFirst: false);
+
                 var result = await _repoCompiler.CompileOne(
                     key, plugin, _config.GetCompiledLibraryPaths(), pullFirst: false);
 
-                ApplyCompileResult(result);
+                _dispatcher.Invoke(() => ApplyCompileResult(result));
 
                 if (result.AllSucceeded)
+                {
+                    if (!plugin.IsManifestDependency)
+                        PruneManifestDependenciesAndRefreshState();
                     SendToast("info", "Compile Plugin", $"{plugin.Name} compiled successfully.");
+                }
                 else
                     SendToast("error", "Compile Plugin", $"{plugin.Name} failed. Check Log.txt.", openLogOnClick: true);
             }
             catch (Exception ex)
             {
                 SendToast("error", "Compile Plugin", ex.Message, openLogOnClick: true);
+            }
+            finally
+            {
+                _isCompiling = false;
+                SendState();
             }
         }
 
@@ -377,22 +629,39 @@ namespace AOSharp
 
             try
             {
+                var localPath = RepoCompiler.GetLocalRepoPath(plugin.RepoUrl);
+                if (!await Task.Run(() => _repoCompiler.CloneOrPull(plugin.RepoUrl, localPath)))
+                {
+                    SendToast("error", "Update Plugin", "Failed to pull repository.", openLogOnClick: true);
+                    return;
+                }
+
+                RepoCompiler.ApplyManifestToPlugin(plugin, localPath);
+                await EnsureManifestDependenciesForConsumersAsync(new[] { plugin }, pullFirst: true);
+
                 var result = await _repoCompiler.CompileOne(
-                    key, plugin, _config.GetCompiledLibraryPaths(), pullFirst: true);
+                    key, plugin, _config.GetCompiledLibraryPaths(), pullFirst: false);
 
                 _dispatcher.Invoke(() => ApplyCompileResult(result));
 
                 if (result.AllSucceeded)
                 {
-                    // Refresh local commit hash and clear the update flag for all plugins sharing this repo
+                    PruneManifestDependenciesAndRefreshState();
+
                     var newCommit = _repoCompiler.GetLocalCommit(plugin.RepoUrl);
-                    foreach (var p in _config.Plugins.Values.Where(p => p.RepoUrl == plugin.RepoUrl))
+                    foreach (var p in _config.Plugins.Values.Where(p =>
+                                 p.PluginType == PluginType.Repo &&
+                                 string.Equals(p.RepoUrl, plugin.RepoUrl, StringComparison.OrdinalIgnoreCase)))
                     {
                         p.HasUpdate = false;
-                        p.LocalCommit = newCommit;
-                        p.RemoteCommit = newCommit;
+                        if (!string.IsNullOrEmpty(newCommit))
+                        {
+                            p.LocalCommit = newCommit;
+                            p.RemoteCommit = newCommit;
+                        }
                     }
 
+                    _config.Save();
                     SendToast("info", "Update Plugin", $"{plugin.Name} updated and compiled successfully.");
                 }
                 else
@@ -455,26 +724,44 @@ namespace AOSharp
         /// </summary>
         private void InitializeLocalCommits()
         {
-            bool anyChanged = false;
+            RefreshLocalCommits(GetAllRepoUrls(), pushState: true);
+        }
 
-            var repoUrls = _config.Plugins.Values
+        private IEnumerable<string> GetAllRepoUrls() =>
+            _config.Plugins.Values
                 .Where(p => p.PluginType == PluginType.Repo && !string.IsNullOrEmpty(p.RepoUrl))
                 .Select(p => p.RepoUrl)
-                .Distinct();
+                .Distinct(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var url in repoUrls)
+        /// <summary>
+        /// Updates <see cref="PluginModel.LocalCommit"/> from cloned repos (no fetch).
+        /// </summary>
+        private void RefreshLocalCommits(IEnumerable<string> repoUrls, bool pushState = true)
+        {
+            bool anyChanged = false;
+
+            foreach (var url in repoUrls ?? Enumerable.Empty<string>())
             {
-                var commit = _repoCompiler.GetLocalCommit(url);
-                if (commit == null) continue;
+                if (string.IsNullOrEmpty(url))
+                    continue;
 
-                foreach (var p in _config.Plugins.Values.Where(p => p.RepoUrl == url))
+                var commit = _repoCompiler.GetLocalCommit(url);
+                if (commit == null)
+                    continue;
+
+                foreach (var p in _config.Plugins.Values.Where(p =>
+                             p.PluginType == PluginType.Repo &&
+                             string.Equals(p.RepoUrl, url, StringComparison.OrdinalIgnoreCase)))
                 {
-                    p.LocalCommit = commit;
-                    anyChanged = true;
+                    if (!string.Equals(p.LocalCommit, commit, StringComparison.OrdinalIgnoreCase))
+                    {
+                        p.LocalCommit = commit;
+                        anyChanged = true;
+                    }
                 }
             }
 
-            if (anyChanged)
+            if (anyChanged && pushState)
                 _dispatcher.BeginInvoke(SendState);
         }
 
@@ -536,12 +823,22 @@ namespace AOSharp
             PostMessage(new { type = "repoCsprojs", projects });
         }
 
-        private void HandleAddRepoPlugin(string url, string projectFilePath)
+        private async Task HandleAddRepoPluginAsync(string url, string projectFilePath)
         {
             if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(projectFilePath)) return;
 
             url = url.Trim();
             projectFilePath = projectFilePath.Trim();
+
+            if (projectFilePath.IndexOf($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
+                    StringComparison.OrdinalIgnoreCase) >= 0 ||
+                projectFilePath.IndexOf($"{Path.AltDirectorySeparatorChar}obj{Path.AltDirectorySeparatorChar}",
+                    StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                SendToast("error", "Add Plugin",
+                    "Do not add a project under an obj folder. Select the .csproj next to Manifest.json in the project directory.");
+                return;
+            }
 
             var relPath = Path.GetRelativePath(RepoCompiler.GetLocalRepoPath(url), projectFilePath);
             var key = Utils.HashFromString(url + "|" + relPath);
@@ -560,35 +857,241 @@ namespace AOSharp
                 Name = name,
                 RepoUrl = url,
                 ProjectFilePath = projectFilePath,
-                Path = string.Empty
+                Path = string.Empty,
+                IsManifestDependency = false
             };
             RepoCompiler.ApplyManifestToPlugin(plugin, RepoCompiler.GetLocalRepoPath(url));
             _config.Plugins.Add(key, plugin);
+
+            await EnsureManifestDependenciesForConsumersAsync(new[] { plugin }, pullFirst: false);
         }
 
         private void HandleRemovePlugin(string key)
         {
             if (key == null) return;
-            if (_config.Plugins.TryGetValue(key, out var p) && p.IsDefault) return;
-            _config.Plugins.Remove(key);
-        }
 
-        private void HandleTogglePlugin(string key, bool enabled)
-        {
-            if (_activeProfile == null || key == null) return;
+            if (!PluginDependencyManager.CanRemove(_config, key, _repoCompiler, out var reason))
+            {
+                if (!string.IsNullOrEmpty(reason))
+                    SendToast("error", "Remove Plugin", reason);
+                return;
+            }
 
-            if (enabled)
-                _activeProfile.EnabledPlugins.Add(key);
-            else
-                _activeProfile.EnabledPlugins.Remove(key);
+            if (!_config.Plugins.TryGetValue(key, out var plugin))
+                return;
 
-            if (!_config.Profiles.Contains(_activeProfile))
-                _config.Profiles.Add(_activeProfile);
+            if (!_config.Plugins.Remove(key))
+                return;
 
-            if (_config.Plugins.TryGetValue(key, out var p))
-                p.IsEnabled = enabled;
+            RepoCompiler.DeletePluginArtifacts(plugin, _config);
+
+            PluginDependencyManager.RemovePluginKeyFromLoadouts(_config, key);
+
+            foreach (var prunedKey in PluginDependencyManager.PruneOrphanDependencies(_config, _repoCompiler))
+                PluginDependencyManager.RemovePluginKeyFromLoadouts(_config, prunedKey);
 
             _config.Save();
+        }
+
+        private bool IsLoadoutLocked(string loadoutId) =>
+            !string.IsNullOrEmpty(loadoutId) &&
+            _profilesModel.Profiles.Any(p => p.LoadoutId == loadoutId && p.IsInjected);
+
+        private void HandleAssignLoadout(string profileId, string loadoutId)
+        {
+            var profile = _profilesModel.Profiles.FirstOrDefault(p => p.Name == profileId);
+            if (profile == null || string.IsNullOrEmpty(loadoutId))
+                return;
+
+            if (profile.IsInjected)
+            {
+                SendToast("error", "Loadout", "Eject before changing loadout.");
+                return;
+            }
+
+            if (!_config.Loadouts.Any(l => l.Id == loadoutId))
+            {
+                SendToast("error", "Loadout", "Loadout not found.");
+                return;
+            }
+
+            profile.LoadoutId = loadoutId;
+            EnsureProfileInConfig(profile);
+            _config.Save();
+
+            if (_activeProfile?.Name == profile.Name)
+                ApplyActiveLoadoutHighlight();
+
+            SendState();
+        }
+
+        private void HandleCreateLoadout(string name, List<string> pluginKeys, string sourceLoadoutId)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return;
+
+            var keys = pluginKeys ?? new List<string>();
+
+            if (!string.IsNullOrEmpty(sourceLoadoutId))
+            {
+                var source = _config.Loadouts.FirstOrDefault(l => l.Id == sourceLoadoutId);
+                if (source?.PluginKeys != null)
+                    keys = new List<string>(source.PluginKeys);
+            }
+
+            var loadout = new Loadout
+            {
+                Id = Guid.NewGuid().ToString(),
+                Name = name.Trim(),
+                PluginKeys = PruneLoadoutKeys(keys)
+            };
+
+            _config.Loadouts.Add(loadout);
+            _config.Save();
+            SendState();
+        }
+
+        private void HandleUpdateLoadout(string loadoutId, string name, List<string> pluginKeys)
+        {
+            var loadout = _config.Loadouts.FirstOrDefault(l => l.Id == loadoutId);
+            if (loadout == null)
+                return;
+
+            if (IsLoadoutLocked(loadoutId))
+            {
+                SendToast("error", "Loadout", "This loadout is in use on an injected character. Eject to edit.");
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(name))
+                loadout.Name = name.Trim();
+
+            if (pluginKeys != null)
+                loadout.PluginKeys = PruneLoadoutKeys(pluginKeys);
+
+            _config.Save();
+            SendState();
+        }
+
+        private void HandleDeleteLoadout(string loadoutId)
+        {
+            if (loadoutId == Config.DefaultLoadoutId)
+            {
+                SendToast("error", "Loadout", "The Default loadout cannot be deleted.");
+                return;
+            }
+
+            if (IsLoadoutLocked(loadoutId))
+            {
+                SendToast("error", "Loadout", "This loadout is in use on an injected character. Eject to delete.");
+                return;
+            }
+
+            if (_config.Profiles.Any(p => p.LoadoutId == loadoutId) ||
+                _profilesModel.Profiles.Any(p => p.LoadoutId == loadoutId))
+            {
+                SendToast("error", "Loadout", "A character is still assigned to this loadout.");
+                return;
+            }
+
+            var loadout = _config.Loadouts.FirstOrDefault(l => l.Id == loadoutId);
+            if (loadout != null)
+            {
+                _config.Loadouts.Remove(loadout);
+                _config.Save();
+                SendState();
+            }
+        }
+
+        private void HandleDuplicateLoadout(string loadoutId, string name)
+        {
+            var source = _config.Loadouts.FirstOrDefault(l => l.Id == loadoutId);
+            if (source == null || string.IsNullOrWhiteSpace(name))
+                return;
+
+            var loadout = new Loadout
+            {
+                Id = Guid.NewGuid().ToString(),
+                Name = name.Trim(),
+                PluginKeys = source.PluginKeys != null
+                    ? new List<string>(source.PluginKeys)
+                    : new List<string>()
+            };
+
+            _config.Loadouts.Add(loadout);
+            _config.Save();
+            SendState();
+        }
+
+        private void HandleSetAutoInject(bool enabled)
+        {
+            _config.AutoInject = enabled;
+            _config.Save();
+            SendState();
+        }
+
+        private List<string> PruneLoadoutKeys(IEnumerable<string> keys)
+        {
+            return keys
+                .Where(k => !string.IsNullOrEmpty(k) &&
+                            _config.Plugins.ContainsKey(k) &&
+                            !PluginManifest.GetEffectiveIsLibrary(_config.Plugins[k]))
+                .Distinct()
+                .ToList();
+        }
+
+        private void AutoInjectProfile(Profile profile)
+        {
+            try
+            {
+                _ = TryInjectProfileAsync(profile);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"[Bridge] Auto-inject failed: {ex.Message}");
+            }
+        }
+
+        private void OnProfilesRefreshed()
+        {
+            var currentlyActive = _profilesModel.Profiles
+                .Where(p => p.IsActive)
+                .Select(p => p.Name)
+                .ToHashSet();
+
+            var newlyActive = currentlyActive
+                .Where(name => !_previouslyActiveProfileNames.Contains(name))
+                .ToList();
+
+            foreach (var profile in _profilesModel.Profiles.Where(p => p.IsActive))
+            {
+                if (string.IsNullOrEmpty(profile.LoadoutId))
+                    profile.LoadoutId = Config.DefaultLoadoutId;
+
+                EnsureProfileInConfig(profile);
+            }
+
+            if (newlyActive.Any())
+                _config.Save();
+
+            _previouslyActiveProfileNames.Clear();
+            foreach (var name in currentlyActive)
+                _previouslyActiveProfileNames.Add(name);
+
+            if (_config.AutoInject)
+            {
+                foreach (var name in newlyActive)
+                {
+                    var profile = _profilesModel.Profiles.FirstOrDefault(p => p.Name == name);
+                    if (profile != null && profile.IsActive && !profile.IsInjected)
+                    {
+                        _activeProfile = profile;
+                        ApplyActiveLoadoutHighlight();
+                        AutoInjectProfile(profile);
+                    }
+                }
+            }
+
             SendState();
         }
 
@@ -639,9 +1142,20 @@ namespace AOSharp
                     {
                         id = p.Name,
                         name = p.Name,
+                        loadoutId = p.LoadoutId ?? Config.DefaultLoadoutId,
                         isInjected = p.IsInjected,
-                        isActive = p.IsActive,
-                        enabledPlugins = p.EnabledPlugins.ToList()
+                        isActive = p.IsActive
+                    })
+                    .ToList();
+
+                var loadouts = _config.Loadouts
+                    .Select(l => new
+                    {
+                        id = l.Id,
+                        name = l.Name,
+                        pluginKeys = l.PluginKeys ?? new List<string>(),
+                        isLocked = IsLoadoutLocked(l.Id),
+                        isDefault = l.Id == Config.DefaultLoadoutId
                     })
                     .ToList();
 
@@ -659,6 +1173,9 @@ namespace AOSharp
                         isLibrary = PluginManifest.GetEffectiveIsLibrary(kvp.Value),
                         section = PluginManifest.GetEffectiveSection(kvp.Value),
                         isDefault = kvp.Value.IsDefault,
+                        isManifestDependency = kvp.Value.IsManifestDependency,
+                        canRemove = PluginDependencyManager.CanRemove(_config, kvp.Key, _repoCompiler, out var removeReason),
+                        removeBlockedReason = removeReason,
                         isCompiled = kvp.Value.IsCompiled,
                         isEnabled = kvp.Value.IsEnabled,
                         hasUpdate = kvp.Value.HasUpdate,
@@ -670,13 +1187,19 @@ namespace AOSharp
                         dependencyRepoUrls = kvp.Value.DependencyRepoUrls
                     });
 
+                ApplyActiveLoadoutHighlight();
+
                 var state = new
                 {
                     type = "state",
                     profiles,
+                    loadouts,
                     plugins,
                     activeProfileId = _activeProfile?.Name,
-                    isCompiling = _isCompiling
+                    autoInject = _config.AutoInject,
+                    isCompiling = _isCompiling,
+                    isInjecting = IsInjecting,
+                    injectQueue = SnapshotInjectQueue()
                 };
 
                 PostMessage(state);
@@ -689,11 +1212,18 @@ namespace AOSharp
 
         // ── Helpers ──────────────────────────────────────────────────────────
 
-        private void ApplyEnabledPlugins()
+        private void ApplyActiveLoadoutHighlight()
         {
+            var activeKeys = new HashSet<string>();
+            var loadout = GetLoadoutForProfile(_activeProfile);
+            if (loadout?.PluginKeys != null)
+            {
+                foreach (var key in loadout.PluginKeys)
+                    activeKeys.Add(key);
+            }
+
             foreach (var kvp in _config.Plugins)
-                kvp.Value.IsEnabled = _activeProfile != null &&
-                                      _activeProfile.EnabledPlugins.Contains(kvp.Key);
+                kvp.Value.IsEnabled = activeKeys.Contains(kvp.Key);
         }
 
         private void ApplyCompileResult(CompileResult result)
@@ -716,6 +1246,7 @@ namespace AOSharp
                         existing.Description = kvp.Value.Description;
                         existing.IsLibrary = kvp.Value.IsLibrary;
                         existing.Section = kvp.Value.Section;
+                        existing.IsManifestDependency = kvp.Value.IsManifestDependency;
                         existing.DependencyRepoUrls = kvp.Value.DependencyRepoUrls != null
                             ? new List<string>(kvp.Value.DependencyRepoUrls)
                             : new List<string>();
@@ -727,10 +1258,87 @@ namespace AOSharp
                 _config.Plugins.CollectionChanged += OnPluginsChanged;
             }
 
+            SyncManifestDependencyPathsFromDisk();
+
             _config.EnsureDefaultsPublic();
+            RefreshLocalCommits(GetAllRepoUrls(), pushState: false);
+            _config.Save();
+            SendState();
+
+            var consumers = result.NewEntries.Values
+                .Where(p => p != null && !p.IsManifestDependency)
+                .ToList();
+            if (consumers.Count > 0)
+                _ = RefreshManifestDependenciesForConsumersAsync(consumers);
+        }
+
+        /// <summary>
+        /// After a compile, manifest-dependency entries may have DLLs on disk before Path is set on the model.
+        /// </summary>
+        private void SyncManifestDependencyPathsFromDisk()
+        {
+            foreach (var plugin in _config.Plugins.Values)
+            {
+                if (!plugin.IsManifestDependency || plugin.PluginType != PluginType.Repo)
+                    continue;
+
+                var projectName = !string.IsNullOrEmpty(plugin.ProjectFilePath)
+                    ? Path.GetFileNameWithoutExtension(plugin.ProjectFilePath)
+                    : plugin.Name;
+
+                var dll = RepoCompiler.TryResolveOutputDll(projectName);
+                if (!string.IsNullOrEmpty(dll))
+                    plugin.Path = dll;
+            }
+        }
+
+        /// <summary>
+        /// Reads each consumer's manifest, clones/adds dependency plugins, and refreshes commit hashes in the UI.
+        /// Call before compile/update so dependencies exist in the grid (same as add-repo flow).
+        /// </summary>
+        private async Task EnsureManifestDependenciesForConsumersAsync(
+            IEnumerable<PluginModel> consumers,
+            bool pullFirst)
+        {
+            await _manifestDependencyLock.WaitAsync();
+            try
+            {
+                foreach (var consumer in consumers.Where(c =>
+                             c != null &&
+                             c.PluginType == PluginType.Repo &&
+                             !c.IsManifestDependency &&
+                             !string.IsNullOrEmpty(c.RepoUrl)))
+                {
+                    var local = RepoCompiler.GetLocalRepoPath(consumer.RepoUrl);
+                    if (!string.IsNullOrEmpty(consumer.ProjectFilePath) && File.Exists(consumer.ProjectFilePath))
+                        RepoCompiler.ApplyManifestToPlugin(consumer, local);
+
+                    await PluginDependencyManager.EnsureDependenciesAsync(_config, _repoCompiler, consumer, pullFirst);
+                }
+
+                _dispatcher.Invoke(PruneManifestDependenciesAndRefreshState);
+            }
+            finally
+            {
+                _manifestDependencyLock.Release();
+            }
+        }
+
+        private void PruneManifestDependenciesAndRefreshState()
+        {
+            foreach (var prunedKey in PluginDependencyManager.PruneOrphanDependencies(_config, _repoCompiler))
+                PluginDependencyManager.RemovePluginKeyFromLoadouts(_config, prunedKey);
+
+            RefreshLocalCommits(GetAllRepoUrls(), pushState: false);
             _config.Save();
             SendState();
         }
+
+        private async Task RefreshManifestDependenciesAsync(PluginModel consumer) =>
+            await EnsureManifestDependenciesForConsumersAsync(new[] { consumer }, pullFirst: false);
+
+        private async Task RefreshManifestDependenciesForConsumersAsync(List<PluginModel> consumers) =>
+            await EnsureManifestDependenciesForConsumersAsync(consumers, pullFirst: false);
 
         private void OnPluginsChanged(object sender,
             System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
@@ -804,6 +1412,10 @@ namespace AOSharp
             [JsonProperty("isLibrary")] public bool IsLibrary { get; set; }
             [JsonProperty("projectFilePath")] public string ProjectFilePath { get; set; }
             [JsonProperty("enabled")] public bool Enabled { get; set; }
+            [JsonProperty("loadoutId")] public string LoadoutId { get; set; }
+            [JsonProperty("name")] public string Name { get; set; }
+            [JsonProperty("pluginKeys")] public List<string> PluginKeys { get; set; }
+            [JsonProperty("sourceLoadoutId")] public string SourceLoadoutId { get; set; }
             [JsonProperty("installDir")] public string InstallDir { get; set; }
             // Error reporting from React window.onerror / ErrorBoundary
             [JsonProperty("level")] public string Level { get; set; }

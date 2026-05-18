@@ -1,13 +1,10 @@
 using System;
 using System.Diagnostics;
 using System.Collections.Generic;
-using System.Collections.Specialized;
 using System.ComponentModel;
-using System.Collections.ObjectModel;
-using System.Globalization;
-using Newtonsoft.Json;
 using AOSharp.IPC;
 using AOSharp.Injection;
+using Newtonsoft.Json;
 using Serilog;
 
 namespace AOSharp
@@ -16,7 +13,7 @@ namespace AOSharp
     {
         public string Name { get; set; }
 
-        public ObservableCollection<string> EnabledPlugins { get; set; }
+        public string LoadoutId { get; set; }
 
         [JsonIgnore]
         public bool _isActive;
@@ -54,25 +51,15 @@ namespace AOSharp
 
         public event PropertyChangedEventHandler PropertyChanged;
 
-        public Profile()
-        {
-            IsActive = false;
-            EnabledPlugins = new ObservableCollection<string>();
-        }
-
         private void OnPropertyChanged(string propertyName)
         {
-            if (PropertyChanged != null)
-            {
-                PropertyChanged(this, new PropertyChangedEventArgs(propertyName));
-            }
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
 
         public bool Inject(IEnumerable<string> plugins)
         {
             try
             {
-                // Try to connect to existing bootstrap first (reconnect after eject - no need to re-inject DLL)
                 IPCClient pipe = new IPCClient(Process.Id.ToString());
                 try
                 {
@@ -97,7 +84,6 @@ namespace AOSharp
                     try { pipe.Disconnect(); } catch { }
                 }
 
-                // No existing bootstrap: inject then connect
                 if (!ReloadedInjector.Inject(Process))
                 {
                     Log.Error("Failed to inject bootstrap DLL");
@@ -138,7 +124,6 @@ namespace AOSharp
             if (_ipcClient == null)
                 return;
 
-            //Breaking the pipe will cause the bootstrapper to unload itself and any loaded plugins
             _ipcClient.Disconnect();
         }
     }

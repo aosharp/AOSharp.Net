@@ -12,8 +12,16 @@ declare global {
   }
 }
 
+let _hostLocked = false;
+
+/** Block outbound host actions while compiling or injecting. */
+export function setHostLocked(locked: boolean): void {
+  _hostLocked = locked;
+}
+
 /** Send a typed action to the C# host. No-ops in browser dev mode. */
 export function sendToHost(msg: OutboundMessage): void {
+  if (_hostLocked) return;
   const json = JSON.stringify(msg);
   if (window.chrome?.webview) {
     window.chrome.webview.postMessage(json);

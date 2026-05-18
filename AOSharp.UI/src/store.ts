@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { AppState, InboundMessage, Plugin, Profile, RepoProject } from './types';
-import { onHostMessage, sendToHost } from './bridge';
+import { onHostMessage, sendToHost, setHostLocked } from './bridge';
 
 interface Toast {
   id: number;
@@ -39,9 +39,13 @@ let _toastSeq = 0;
 
 export const useStore = create<Store>((set, get) => ({
   profiles: [],
+  loadouts: [],
   plugins: {},
   activeProfileId: null,
+  autoInject: false,
   isCompiling: false,
+  isInjecting: false,
+  injectQueue: [],
   toasts: [],
   compileProgress: null,
   pendingBrowseKind: null,
@@ -66,7 +70,16 @@ export const useStore = create<Store>((set, get) => ({
     });
   },
 
-  _applyState: (s) => set({ ...s, isLoading: false }),
+  _applyState: (s) => {
+    const locked = s.isCompiling || s.isInjecting;
+    setHostLocked(locked);
+    set((prev) => ({
+      ...s,
+      isLoading: false,
+      compileProgress: s.isCompiling ? prev.compileProgress : null,
+      injectQueue: s.isInjecting ? s.injectQueue : [],
+    }));
+  },
 }));
 
 /** Wire up the host → store message pipe. Call once at app startup. */
@@ -85,8 +98,19 @@ export function initBridge(): void {
     if (msg.type === 'state') {
       const { type: _t, ...state } = msg;
       store._applyState(state as AppState);
+    } else if (msg.type === 'injectProgress') {
+      const locked = msg.isInjecting || store.isCompiling;
+      setHostLocked(locked);
+      useStore.setState({
+        isInjecting: msg.isInjecting,
+        injectQueue: msg.queue,
+      });
     } else if (msg.type === 'compileProgress') {
-      useStore.setState({ compileProgress: { pluginName: msg.pluginName, message: msg.message } });
+      setHostLocked(true);
+      useStore.setState({
+        isCompiling: true,
+        compileProgress: { pluginName: msg.pluginName, message: msg.message },
+      });
     } else if (msg.type === 'browseResult') {
       const resolve = store._browseResolvers.get(msg.kind);
       if (resolve) {
@@ -132,3 +156,5 @@ export const selectPluginsMap = (s: Store): Record<string, Plugin> => s.plugins;
 
 export const selectActiveProfile = (s: Store): Profile | null =>
   s.profiles.find((p) => p.id === s.activeProfileId) ?? null;
+
+export const selectUiLocked = (s: Store): boolean => s.isCompiling || s.isInjecting;

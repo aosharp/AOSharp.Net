@@ -20,6 +20,10 @@ export interface Plugin {
   isLibrary: boolean;
   section?: string | null;
   isDefault: boolean;
+  isManifestDependency: boolean;
+  canRemove: boolean;
+  /** Set when canRemove is false (e.g. required by another plugin). */
+  removeBlockedReason?: string | null;
   isCompiled: boolean;
   isEnabled: boolean;
   hasUpdate: boolean;
@@ -31,25 +35,47 @@ export interface Plugin {
   dependencyRepoUrls?: string[] | null;
 }
 
+export interface Loadout {
+  id: string;
+  name: string;
+  pluginKeys: string[];
+  isLocked: boolean;
+  isDefault: boolean;
+}
+
 export interface Profile {
   id: string;
   name: string;
+  loadoutId: string;
   isInjected: boolean;
   isActive: boolean;
-  enabledPlugins: string[];
+}
+
+export type InjectQueueStatus = 'pending' | 'injecting' | 'succeeded' | 'failed';
+
+export interface InjectQueueItem {
+  profileId: string;
+  profileName: string;
+  status: InjectQueueStatus;
+  message?: string | null;
 }
 
 export interface AppState {
   profiles: Profile[];
+  loadouts: Loadout[];
   plugins: Record<string, Plugin>;
   activeProfileId: string | null;
+  autoInject: boolean;
   isCompiling: boolean;
+  isInjecting: boolean;
+  injectQueue: InjectQueueItem[];
 }
 
 // ── Messages C# → React ─────────────────────────────────────────────────────
 
 export type InboundMessage =
   | { type: 'state' } & AppState
+  | { type: 'injectProgress'; isInjecting: boolean; queue: InjectQueueItem[] }
   | { type: 'compileProgress'; pluginName: string; message: string }
   | { type: 'browseResult'; kind: 'dll' | 'directory'; path: string }
   | { type: 'repoCsprojs'; projects: RepoProject[] }
@@ -71,8 +97,13 @@ export type OutboundMessage =
   | { type: 'removePlugin'; key: string }
   | { type: 'openUrl'; url: string }
   | { type: 'openLogFile' }
-  | { type: 'togglePlugin'; key: string; enabled: boolean }
   | { type: 'browseDll' }
   | { type: 'browseDirectory' }
   | { type: 'fetchRepoCsprojs'; url: string }
-  | { type: 'enableLargeAddressAware'; installDir: string };
+  | { type: 'enableLargeAddressAware'; installDir: string }
+  | { type: 'assignLoadout'; profileId: string; loadoutId: string }
+  | { type: 'createLoadout'; name: string; pluginKeys?: string[]; sourceLoadoutId?: string }
+  | { type: 'updateLoadout'; loadoutId: string; name?: string; pluginKeys?: string[] }
+  | { type: 'deleteLoadout'; loadoutId: string }
+  | { type: 'duplicateLoadout'; loadoutId: string; name: string }
+  | { type: 'setAutoInject'; enabled: boolean };

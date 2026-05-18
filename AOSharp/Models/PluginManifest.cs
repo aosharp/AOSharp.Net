@@ -25,6 +25,7 @@ namespace AOSharp.Models
         [JsonProperty("section")]
         public string Section { get; set; }
 
+        /// <summary>Git repo URLs, optional <c>/path/Project.csproj</c> suffix, or a <c>.csproj</c> path relative to this project.</summary>
         [JsonProperty("dependencies")]
         public List<string> Dependencies { get; set; }
 

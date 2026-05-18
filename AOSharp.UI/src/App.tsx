@@ -1,20 +1,28 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import { initBridge } from './store';
-import { useStore, selectActiveProfile } from './store';
+import { useStore, selectUiLocked } from './store';
 import { sendToHost } from './bridge';
 import { ProfileList } from './components/ProfileList';
+import { LoadoutBar } from './components/LoadoutBar';
 import { PluginsGrid } from './components/PluginsGrid';
 import { AddPluginDialog } from './components/AddPluginDialog';
 import { TweaksDialog } from './components/TweaksDialog';
+import { LoadoutsDialog } from './components/LoadoutsDialog';
 import { Toaster } from './components/Toaster';
+import { CompilingOverlay } from './components/CompilingOverlay';
+import { InjectingOverlay } from './components/InjectingOverlay';
+import { RefreshIcon } from './components/PluginGridIcons';
 
 export default function App() {
   const [showAddPlugin, setShowAddPlugin] = useState(false);
   const [showTweaks, setShowTweaks] = useState(false);
+  const [showManageLoadouts, setShowManageLoadouts] = useState(false);
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
 
-  const activeProfile = useStore(selectActiveProfile);
   const isCompiling = useStore((s) => s.isCompiling);
+  const isInjecting = useStore((s) => s.isInjecting);
+  const injectQueue = useStore((s) => s.injectQueue);
+  const uiLocked = useStore(selectUiLocked);
   const compileProgress = useStore((s) => s.compileProgress);
   const hasUncompiled = useStore((s) =>
     Object.values(s.plugins).some((p) => p.pluginType === 'Repo' && !p.isCompiled)
@@ -24,29 +32,28 @@ export default function App() {
     initBridge();
   }, []);
 
-  const isInjected = activeProfile?.isInjected ?? false;
-
-  function handleInjectEject() {
-    sendToHost(isInjected ? { type: 'eject' } : { type: 'inject' });
-  }
+  useEffect(() => {
+    if (!uiLocked) return;
+    setShowAddPlugin(false);
+    setShowTweaks(false);
+    setShowManageLoadouts(false);
+  }, [uiLocked]);
 
   function handleCompileAll() {
+    if (uiLocked) return;
     sendToHost({ type: 'compileAll' });
   }
 
   function handleCheckUpdates() {
-    if (isCheckingUpdates) return;
+    if (uiLocked || isCheckingUpdates) return;
     setIsCheckingUpdates(true);
     sendToHost({ type: 'checkUpdates' });
-    // Spin the icon for a few seconds — the backend will push new state when done
     setTimeout(() => setIsCheckingUpdates(false), 3000);
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      {/* Toolbar */}
-      <div
-        style={{
+      <div style={{
           height: 40,
           background: 'var(--color-surface)',
           borderBottom: '1px solid var(--color-border)',
@@ -58,38 +65,39 @@ export default function App() {
         }}
       >
         <button
-          onClick={() => setShowTweaks(true)}
+          onClick={() => !uiLocked && setShowTweaks(true)}
+          disabled={uiLocked}
           title="Tweaks"
-          style={iconBtnStyle}
+          style={{ ...iconBtnStyle, opacity: uiLocked ? 0.45 : 1, cursor: uiLocked ? 'not-allowed' : 'pointer' }}
         >
           ⚙
         </button>
         <div style={{ flex: 1 }} />
-        {activeProfile && (
-          <button
-            onClick={handleInjectEject}
-            style={{
-              ...toolbarBtnStyle,
-              background: isInjected ? '#3d1a1a' : 'var(--color-surface-hover)',
-              borderColor: isInjected ? 'var(--color-red)' : 'var(--color-border)',
-              minWidth: 72,
-            }}
-          >
-            {isInjected ? 'Eject' : 'Inject'}
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => !uiLocked && setShowManageLoadouts(true)}
+          disabled={uiLocked}
+          style={{
+            ...primaryToolbarBtnStyle,
+            opacity: uiLocked ? 0.45 : 1,
+            cursor: uiLocked ? 'not-allowed' : 'pointer',
+          }}
+        >
+          Manage loadouts
+        </button>
         {(hasUncompiled || isCompiling) && (
           <button
             onClick={handleCompileAll}
             disabled={isCompiling}
-            title={isCompiling ? `Compiling${compileProgress ? `: ${compileProgress.pluginName}` : '...'}` : undefined}
+            title={
+              isCompiling
+                ? `Compiling${compileProgress ? `: ${compileProgress.pluginName}` : '...'}`
+                : undefined
+            }
             style={{
-              ...toolbarBtnStyle,
+              ...primaryToolbarBtnStyle,
               opacity: isCompiling ? 0.5 : 1,
-              color: 'var(--color-text-muted)',
-              fontSize: 11,
-              fontWeight: 700,
-              letterSpacing: '0.04em',
+              cursor: isCompiling ? 'not-allowed' : 'pointer',
             }}
           >
             {isCompiling
@@ -98,25 +106,25 @@ export default function App() {
           </button>
         )}
         <button
-          onClick={() => setShowAddPlugin(true)}
+          onClick={() => !uiLocked && setShowAddPlugin(true)}
+          disabled={uiLocked}
           style={{
-            ...toolbarBtnStyle,
-            color: 'var(--color-text-muted)',
-            fontSize: 11,
-            fontWeight: 700,
-            letterSpacing: '0.04em',
+            ...primaryToolbarBtnStyle,
+            opacity: uiLocked ? 0.45 : 1,
+            cursor: uiLocked ? 'not-allowed' : 'pointer',
           }}
         >
           Install Plugin
         </button>
         <button
           onClick={handleCheckUpdates}
-          disabled={isCheckingUpdates}
+          disabled={uiLocked || isCheckingUpdates}
           title="Check for updates"
           style={{
             ...iconBtnStyle,
             fontSize: 15,
-            opacity: isCheckingUpdates ? 0.5 : 1,
+            opacity: uiLocked || isCheckingUpdates ? 0.5 : 1,
+            cursor: uiLocked ? 'not-allowed' : 'pointer',
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -126,24 +134,31 @@ export default function App() {
         >
           <span
             style={{
-              display: 'inline-block',
+              display: 'inline-flex',
               animation: isCheckingUpdates ? 'spin 1s linear infinite' : 'none',
             }}
           >
-            ↻
+            <RefreshIcon size={15} />
           </span>
         </button>
       </div>
 
-      {/* Main content */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         <ProfileList />
-        <PluginsGrid />
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+          <LoadoutBar />
+          <PluginsGrid />
+        </div>
       </div>
 
-      {showAddPlugin && <AddPluginDialog onClose={() => setShowAddPlugin(false)} />}
-      {showTweaks && <TweaksDialog onClose={() => setShowTweaks(false)} />}
+      {showAddPlugin && !uiLocked && <AddPluginDialog onClose={() => setShowAddPlugin(false)} />}
+      {showTweaks && !uiLocked && <TweaksDialog onClose={() => setShowTweaks(false)} />}
+      {showManageLoadouts && !uiLocked && (
+        <LoadoutsDialog onClose={() => setShowManageLoadouts(false)} />
+      )}
       <Toaster />
+      {isCompiling && <CompilingOverlay progress={compileProgress} />}
+      {isInjecting && injectQueue.length > 0 && <InjectingOverlay queue={injectQueue} />}
     </div>
   );
 }
@@ -156,6 +171,13 @@ const toolbarBtnStyle: React.CSSProperties = {
   padding: '4px 10px',
   cursor: 'pointer',
   fontSize: 12,
+};
+
+const primaryToolbarBtnStyle: React.CSSProperties = {
+  ...toolbarBtnStyle,
+  color: '#fff',
+  fontSize: 11,
+  letterSpacing: '0.04em',
 };
 
 const iconBtnStyle: React.CSSProperties = {

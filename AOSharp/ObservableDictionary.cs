@@ -68,13 +68,19 @@ namespace AOSharp
 
         public new bool Remove(TKey key)
         {
-            if (base.TryGetValue(key, out TValue value))
+            if (!base.TryGetValue(key, out TValue value))
+                return false;
+
+            var item = new KeyValuePair<TKey, TValue>(key, value);
+            int index = base.Keys.ToList().IndexOf(key);
+            bool result = base.Remove(key);
+            if (result)
             {
-                var item = new KeyValuePair<TKey, TValue>(key, base[key]);
-                bool result = base.Remove(key);
-                return result;
+                OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Remove, item, index));
+                OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
             }
-            return false;
+
+            return result;
         }
 
         public new void Clear()
