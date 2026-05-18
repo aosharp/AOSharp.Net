@@ -629,16 +629,8 @@ namespace AOSharp.Services
                 if (string.IsNullOrEmpty(buildDir))
                     continue;
 
-                CopyTopLevelDllsToBootstrapHost(buildDir, hostDir, projName);
-                CopyNativeAssetsFromBuildOutput(buildDir, hostDir, useBootstrapStaging: true);
-
-                foreach (var ext in new[] { ".deps.json", ".runtimeconfig.json" })
-                {
-                    var src = Path.Combine(buildDir, projName + ext);
-                    if (!File.Exists(src))
-                        continue;
-                    CopyFileToBootstrapHostOrStage(src, Path.Combine(hostDir, projName + ext));
-                }
+                CopyBuildOutputTreeToDeployDirectory(
+                    buildDir, hostDir, projName, projName, csprojPath: null, useBootstrapStaging: true);
             }
 
             EnsureBootstrapRuntimeConfig(hostDir, "AOSharp.Bootstrap");
@@ -1369,47 +1361,6 @@ namespace AOSharp.Services
                 Path.GetFileName(destFile));
         }
 
-        private static void CopyTopLevelDllsToBootstrapHost(string buildOutDir, string hostDir, string outputName)
-        {
-            if (string.IsNullOrEmpty(buildOutDir) || !Directory.Exists(buildOutDir))
-                return;
-
-            foreach (var dll in Directory.GetFiles(buildOutDir, "*.dll", SearchOption.TopDirectoryOnly))
-            {
-                var stem = Path.GetFileNameWithoutExtension(dll);
-                if (IsAoSharpSdkAssemblyStem(stem) &&
-                    !string.Equals(stem, outputName, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                CopyFileToBootstrapHostOrStage(dll, Path.Combine(hostDir, Path.GetFileName(dll)));
-            }
-        }
-
-        /// <summary>
-        /// Recursively copies <c>runtimes\</c> from build output (e.g. <c>runtimes\win-x86\native\e_sqlite3.dll</c>)
-        /// so <see cref="AssemblyDependencyResolver"/> can resolve native assets next to the plugin DLL.
-        /// </summary>
-        private static void CopyNativeAssetsFromBuildOutput(string buildOutDir, string pluginOutputDir, bool useBootstrapStaging)
-        {
-            if (string.IsNullOrEmpty(buildOutDir) || string.IsNullOrEmpty(pluginOutputDir))
-                return;
-
-            var sourceRuntimes = Path.Combine(buildOutDir, "runtimes");
-            if (!Directory.Exists(sourceRuntimes))
-                return;
-
-            var destRuntimes = Path.Combine(pluginOutputDir, "runtimes");
-            foreach (var file in Directory.EnumerateFiles(sourceRuntimes, "*", SearchOption.AllDirectories))
-            {
-                var relative = Path.GetRelativePath(sourceRuntimes, file);
-                var destFile = Path.Combine(destRuntimes, relative);
-                if (useBootstrapStaging)
-                    CopyFileToBootstrapHostOrStage(file, destFile);
-                else
-                    CopyFileWithRetryOrThrow(file, destFile);
-            }
-        }
-
         private static void TryDeleteFileQuiet(string path)
         {
             try
@@ -1471,11 +1422,12 @@ namespace AOSharp.Services
             {
                 try
                 {
-                    CopyTopLevelDllsFromBuildOutput(
+                    CopyBuildOutputTreeToDeployDirectory(
                         Path.GetDirectoryName(builtDll),
                         pluginOutputDir,
                         outputName,
-                        Path.GetFileNameWithoutExtension(builtDll));
+                        Path.GetFileNameWithoutExtension(builtDll),
+                        projectFile);
                 }
                 catch (Exception ex)
                 {
@@ -1494,49 +1446,251 @@ namespace AOSharp.Services
         }
 
         /// <summary>
-        /// Copies build output into Plugins\{outputName}\: top-level DLLs, deps/runtimeconfig,
-        /// and the <c>runtimes\</c> tree for native libraries (SQLite, etc.).
-        /// Skips other AOSharp.SDK DLLs so a Common build does not drop Core into Plugins\Common.
+        /// Copies the project build output tree into the deploy folder (Plugins\{name}\): managed DLLs,
+        /// <c>runtimes\</c>, deps/runtimeconfig, and any <c>CopyToOutputDirectory</c> content from the csproj.
         /// </summary>
-        private static void CopyTopLevelDllsFromBuildOutput(
+        private static void CopyBuildOutputTreeToDeployDirectory(
             string buildOutDir,
-            string pluginOutputDir,
+            string deployDir,
             string outputName,
-            string primaryAssemblyName = null)
+            string primaryAssemblyName,
+            string csprojPath,
+            bool useBootstrapStaging = false)
         {
             if (string.IsNullOrEmpty(buildOutDir) || !Directory.Exists(buildOutDir))
                 return;
 
-            Directory.CreateDirectory(pluginOutputDir);
-            foreach (var dll in Directory.GetFiles(buildOutDir, "*.dll", SearchOption.TopDirectoryOnly))
+            Directory.CreateDirectory(deployDir);
+            var buildRoot = Path.GetFullPath(buildOutDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
+            foreach (var file in Directory.EnumerateFiles(buildOutDir, "*", SearchOption.AllDirectories))
             {
-                var stem = Path.GetFileNameWithoutExtension(dll);
-                if (IsAoSharpSdkAssemblyStem(stem) &&
-                    !string.Equals(stem, outputName, StringComparison.OrdinalIgnoreCase))
+                var relative = Path.GetRelativePath(buildOutDir, file);
+                if (ShouldSkipDeployOutputRelativePath(relative))
                     continue;
 
-                var dest = Path.Combine(pluginOutputDir, Path.GetFileName(dll));
-                CopyFileWithRetryOrThrow(dll, dest);
+                if (Path.GetExtension(file).Equals(".dll", StringComparison.OrdinalIgnoreCase) &&
+                    !ShouldCopyBuildOutputDll(file, buildRoot, outputName, primaryAssemblyName))
+                    continue;
+
+                var destFile = Path.Combine(deployDir, relative);
+                CopyDeployFile(file, destFile, useBootstrapStaging);
             }
 
-            var depsNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (!string.IsNullOrEmpty(outputName))
-                depsNames.Add(outputName);
-            if (!string.IsNullOrWhiteSpace(primaryAssemblyName))
-                depsNames.Add(primaryAssemblyName);
+            EnsureCsprojCopyToOutputDirectoryItems(csprojPath, buildOutDir, deployDir, useBootstrapStaging);
+        }
 
-            foreach (var name in depsNames)
+        private static void CopyDeployFile(string sourceFile, string destFile, bool useBootstrapStaging)
+        {
+            if (useBootstrapStaging)
+                CopyFileToBootstrapHostOrStage(sourceFile, destFile);
+            else
+                CopyFileWithRetryOrThrow(sourceFile, destFile);
+        }
+
+        private static bool ShouldSkipDeployOutputRelativePath(string relativePath)
+        {
+            if (string.IsNullOrEmpty(relativePath))
+                return false;
+
+            foreach (var segment in relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
             {
-                foreach (var ext in new[] { ".runtimeconfig.json", ".deps.json" })
+                if (segment.Equals("obj", StringComparison.OrdinalIgnoreCase) ||
+                    segment.Equals("ref", StringComparison.OrdinalIgnoreCase) ||
+                    segment.Equals("refs", StringComparison.OrdinalIgnoreCase) ||
+                    segment.Equals("refint", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>Top-level AOSharp.SDK DLLs from another project are skipped; nested and native DLLs are kept.</summary>
+        private static bool ShouldCopyBuildOutputDll(
+            string dllPath,
+            string buildRoot,
+            string outputName,
+            string primaryAssemblyName)
+        {
+            var dllDir = Path.GetDirectoryName(Path.GetFullPath(dllPath));
+            if (dllDir == null)
+                return true;
+
+            if (!string.Equals(dllDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    buildRoot, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var stem = Path.GetFileNameWithoutExtension(dllPath);
+            if (!IsAoSharpSdkAssemblyStem(stem))
+                return true;
+
+            if (string.Equals(stem, outputName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(stem, primaryAssemblyName, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return false;
+        }
+
+        /// <summary>
+        /// Copies <c>Content</c>/<c>None</c> items declared with <c>CopyToOutputDirectory</c> when they are not
+        /// already present in the deploy folder (e.g. custom targets or non-default output layout).
+        /// </summary>
+        private static void EnsureCsprojCopyToOutputDirectoryItems(
+            string csprojPath,
+            string buildOutDir,
+            string deployDir,
+            bool useBootstrapStaging)
+        {
+            if (string.IsNullOrEmpty(csprojPath) || !File.Exists(csprojPath))
+                return;
+
+            foreach (var item in ParseCsprojCopyToOutputDirectoryItems(csprojPath))
+            {
+                var destFile = Path.Combine(deployDir, item.RelativeOutputPath);
+                if (File.Exists(destFile))
+                    continue;
+
+                string source = null;
+                if (!string.IsNullOrEmpty(item.SourcePath) && File.Exists(item.SourcePath))
+                    source = item.SourcePath;
+
+                if (source == null && !string.IsNullOrEmpty(buildOutDir))
                 {
-                    var src = Path.Combine(buildOutDir, name + ext);
-                    if (!File.Exists(src))
-                        continue;
-                    CopyFileWithRetryOrThrow(src, Path.Combine(pluginOutputDir, name + ext));
+                    var fromBuild = Path.Combine(buildOutDir, item.RelativeOutputPath);
+                    if (File.Exists(fromBuild))
+                        source = fromBuild;
+                }
+
+                if (source == null)
+                    continue;
+
+                CopyDeployFile(source, destFile, useBootstrapStaging);
+            }
+        }
+
+        private readonly struct CopyToOutputDeployItem
+        {
+            public string SourcePath { get; init; }
+            public string RelativeOutputPath { get; init; }
+        }
+
+        private static IEnumerable<CopyToOutputDeployItem> ParseCsprojCopyToOutputDirectoryItems(string csprojPath)
+        {
+            XDocument doc;
+            try
+            {
+                doc = XDocument.Load(csprojPath);
+            }
+            catch
+            {
+                yield break;
+            }
+
+            var projDir = Path.GetDirectoryName(Path.GetFullPath(csprojPath));
+            if (string.IsNullOrEmpty(projDir))
+                yield break;
+
+            var itemElementNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "Content", "None", "EmbeddedResource"
+            };
+
+            foreach (var element in doc.Descendants())
+            {
+                if (!itemElementNames.Contains(element.Name.LocalName))
+                    continue;
+
+                var include = element.Attribute("Include")?.Value;
+                if (string.IsNullOrWhiteSpace(include))
+                    continue;
+
+                var copyMode = element.Attribute("CopyToOutputDirectory")?.Value
+                               ?? element.Elements().FirstOrDefault(e =>
+                                   e.Name.LocalName.Equals("CopyToOutputDirectory", StringComparison.Ordinal))?.Value;
+
+                if (!IsCopyToOutputEnabled(copyMode))
+                    continue;
+
+                var link = element.Attribute("Link")?.Value
+                           ?? element.Elements().FirstOrDefault(e =>
+                               e.Name.LocalName.Equals("Link", StringComparison.Ordinal))?.Value;
+                var targetPath = element.Attribute("TargetPath")?.Value
+                                 ?? element.Elements().FirstOrDefault(e =>
+                                     e.Name.LocalName.Equals("TargetPath", StringComparison.Ordinal))?.Value;
+
+                foreach (var sourceFile in ExpandCsprojInclude(projDir, include.Trim()))
+                {
+                    yield return new CopyToOutputDeployItem
+                    {
+                        SourcePath = sourceFile,
+                        RelativeOutputPath = GetCopyToOutputRelativePath(projDir, sourceFile, link, targetPath)
+                    };
                 }
             }
+        }
 
-            CopyNativeAssetsFromBuildOutput(buildOutDir, pluginOutputDir, useBootstrapStaging: false);
+        private static bool IsCopyToOutputEnabled(string copyMode)
+        {
+            if (string.IsNullOrWhiteSpace(copyMode))
+                return false;
+
+            return copyMode.Equals("PreserveNewest", StringComparison.OrdinalIgnoreCase) ||
+                   copyMode.Equals("Always", StringComparison.OrdinalIgnoreCase) ||
+                   copyMode.Equals("true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string GetCopyToOutputRelativePath(
+            string projDir,
+            string sourceFullPath,
+            string link,
+            string targetPath)
+        {
+            if (!string.IsNullOrWhiteSpace(targetPath))
+                return targetPath.Replace('/', Path.DirectorySeparatorChar)
+                    .Replace('\\', Path.DirectorySeparatorChar);
+
+            if (!string.IsNullOrWhiteSpace(link))
+                return link.Replace('/', Path.DirectorySeparatorChar)
+                    .Replace('\\', Path.DirectorySeparatorChar);
+
+            return Path.GetRelativePath(projDir, sourceFullPath);
+        }
+
+        private static IEnumerable<string> ExpandCsprojInclude(string projDir, string include)
+        {
+            var normalized = include.Replace('/', Path.DirectorySeparatorChar)
+                .Replace('\\', Path.DirectorySeparatorChar);
+
+            if (normalized.IndexOf('*') >= 0)
+            {
+                var fullPattern = Path.GetFullPath(Path.Combine(projDir, normalized));
+                var searchDir = Path.GetDirectoryName(fullPattern);
+                var filePattern = Path.GetFileName(fullPattern);
+                if (string.IsNullOrEmpty(searchDir) || !Directory.Exists(searchDir))
+                    yield break;
+
+                var option = normalized.Contains("**", StringComparison.Ordinal)
+                    ? SearchOption.AllDirectories
+                    : SearchOption.TopDirectoryOnly;
+
+                foreach (var file in Directory.EnumerateFiles(searchDir, filePattern, option))
+                    yield return file;
+
+                yield break;
+            }
+
+            var direct = Path.GetFullPath(Path.Combine(projDir, normalized));
+            if (File.Exists(direct))
+            {
+                yield return direct;
+                yield break;
+            }
+
+            if (Directory.Exists(direct))
+            {
+                foreach (var file in Directory.EnumerateFiles(direct, "*", SearchOption.AllDirectories))
+                    yield return file;
+            }
         }
 
         /// <summary>
