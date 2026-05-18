@@ -25,6 +25,7 @@ namespace AOSharp
 
             _config = Config.Load(Directories.ConfigFilePath);
             _profilesModel = new ProfilesModel(_config);
+            RepoCompiler.ApplyPendingBootstrapSdkUpdates();
 
             InitializeComponent();
 

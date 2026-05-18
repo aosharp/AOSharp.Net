@@ -267,6 +267,13 @@ namespace AOSharp
                 return;
             }
 
+            if (!RepoCompiler.ApplyPendingBootstrapSdkUpdates())
+            {
+                SendToast("error", "Inject",
+                    "Updated AOSharp.SDK files are in Plugins\\AOSharp.Bootstrap\\.update-staging but could not be applied. Close any other AOSharp instance and try again, or restart the loader.");
+                return;
+            }
+
             bool ok = _activeProfile.Inject(plugins);
 
             if (!ok)
@@ -286,6 +293,14 @@ namespace AOSharp
         {
             _activeProfile?.Eject();
             SendState();
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(750);
+                if (RepoCompiler.ApplyPendingBootstrapSdkUpdates())
+                    _dispatcher.Invoke(() =>
+                        SendToast("info", "AOSharp.SDK",
+                            "Staged AOSharp.SDK files were applied to Plugins\\AOSharp.Bootstrap."));
+            });
         }
 
         private async Task HandleCompileAllAsync()
@@ -303,7 +318,13 @@ namespace AOSharp
                     precompiledLibraries: _config.GetCompiledLibraryPaths());
 
                 if (result.AllSucceeded)
-                    SendToast("info", "Compile Plugins", "All plugins compiled successfully.");
+                {
+                    if (RepoCompiler.HasPendingBootstrapSdkUpdates())
+                        SendToast("info", "Compile Plugins",
+                            "Plugins compiled. Some AOSharp.SDK files could not update live — restart the loader to apply (.update-staging).");
+                    else
+                        SendToast("info", "Compile Plugins", "All plugins compiled successfully.");
+                }
                 else
                     SendToast("error", "Compile Plugins", "One or more plugins failed. Check Log.txt.", openLogOnClick: true);
             }
@@ -717,7 +738,29 @@ namespace AOSharp
         private void OnCompileProgress(object sender, CompileProgressEventArgs args)
         {
             Log.Information($"[Compile] {args.PluginName}: {args.Message}");
-            PostMessage(new { type = "compileProgress", pluginName = args.PluginName, message = args.Message });
+            _dispatcher.BeginInvoke(() =>
+            {
+                PostMessage(new { type = "compileProgress", pluginName = args.PluginName, message = args.Message });
+                if (!string.IsNullOrWhiteSpace(args.DllPath) && File.Exists(args.DllPath))
+                    TryApplyCompiledDllPath(args.PluginName, args.DllPath);
+            });
+        }
+
+        private void TryApplyCompiledDllPath(string pluginName, string dllPath)
+        {
+            var plugin = _config.Plugins.Values.FirstOrDefault(p =>
+                string.Equals(p.Name, pluginName, StringComparison.OrdinalIgnoreCase));
+            if (plugin == null)
+                return;
+
+            if (string.Equals(plugin.Path, dllPath, StringComparison.OrdinalIgnoreCase))
+            {
+                SendState();
+                return;
+            }
+
+            plugin.Path = dllPath;
+            SendState();
         }
 
         private void SendToast(string level, string title, string message, bool openLogOnClick = false)

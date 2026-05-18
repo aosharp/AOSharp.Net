@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Security;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 using AOSharp;
@@ -21,6 +22,8 @@ namespace AOSharp.Services
         public string PluginName { get; set; }
         public string Message { get; set; }
         public bool IsError { get; set; }
+        /// <summary>When set, the loader UI can mark this plugin compiled before the repo group finishes.</summary>
+        public string DllPath { get; set; }
     }
 
     /// <summary>
@@ -37,6 +40,15 @@ namespace AOSharp.Services
 
     public class RepoCompiler
     {
+        /// <summary>How to pick among multiple local copies of the same AOSharp SDK assembly.</summary>
+        private enum SdkReferencePreference
+        {
+            /// <summary>MSBuild should use outputs from the current SDK build (bin), not stale host copies.</summary>
+            FreshBuild,
+            /// <summary>Consumer plugins should bind to the live NativeHost bundle under Plugins\AOSharp.Bootstrap.</summary>
+            LiveHost
+        }
+
         /// <summary>Fallback when AOSharp.csproj cannot be found (keep in sync with Loader AOSharp.csproj).</summary>
         private const string LoaderTargetFrameworkFallback = "net10.0-windows";
 
@@ -44,14 +56,15 @@ namespace AOSharp.Services
 
         public event EventHandler<CompileProgressEventArgs> Progress;
 
-        private void Report(string pluginName, string message, bool isError = false)
+        private void Report(string pluginName, string message, bool isError = false, string dllPath = null)
         {
             Log.Information($"[RepoCompiler] {pluginName}: {message}");
             Progress?.Invoke(this, new CompileProgressEventArgs
             {
                 PluginName = pluginName,
                 Message = message,
-                IsError = isError
+                IsError = isError,
+                DllPath = !string.IsNullOrWhiteSpace(dllPath) && File.Exists(dllPath) ? dllPath : null
             });
         }
 
@@ -222,9 +235,14 @@ namespace AOSharp.Services
                         if (!IsAoSharpSdkAssemblyStem(id))
                             continue;
 
+                        var fullPath = Path.GetFullPath(path);
                         if (!byId.TryGetValue(id, out var existing) ||
-                            File.GetLastWriteTimeUtc(path) >= File.GetLastWriteTimeUtc(existing))
-                            byId[id] = Path.GetFullPath(path);
+                            SdkReferencePathScore(fullPath, SdkReferencePreference.FreshBuild) >
+                            SdkReferencePathScore(existing, SdkReferencePreference.FreshBuild) ||
+                            (SdkReferencePathScore(fullPath, SdkReferencePreference.FreshBuild) ==
+                             SdkReferencePathScore(existing, SdkReferencePreference.FreshBuild) &&
+                             File.GetLastWriteTimeUtc(fullPath) >= File.GetLastWriteTimeUtc(existing)))
+                            byId[id] = fullPath;
                     }
                 }
                 catch
@@ -354,7 +372,8 @@ namespace AOSharp.Services
             var ix = list.FindIndex(l => string.Equals(l.packageId, entry.packageId, StringComparison.OrdinalIgnoreCase));
             if (ix < 0)
                 list.Add(entry);
-            else
+            else if (SdkReferencePathScore(entry.dllPath, SdkReferencePreference.FreshBuild) >=
+                     SdkReferencePathScore(list[ix].dllPath, SdkReferencePreference.FreshBuild))
                 list[ix] = entry;
         }
 
@@ -428,24 +447,40 @@ namespace AOSharp.Services
                 .Where(p => p.isLibrary)
                 .ToDictionary(p => p.name, p => p.csprojPath, StringComparer.OrdinalIgnoreCase);
 
+            NormalizeCompiledSdkLibraryPaths(compiledLibraries, SdkReferencePreference.FreshBuild);
+
             foreach (var projName in AoSharpSdkLibraryBuildOrder)
             {
                 if (!libraryProjects.TryGetValue(projName, out var csprojPath))
                     continue;
 
-                await Task.Run(() => InjectReferenceOverrides(sdkLocalPath, compiledLibraries, excludePackageIds: new[] { projName }));
+                await Task.Run(() => InjectReferenceOverrides(sdkLocalPath, compiledLibraries,
+                    excludePackageIds: new[] { projName }, preferFreshSdkBuildOutputs: true));
 
-                var primaryDll = await Task.Run(() => Build(csprojPath, projName));
+                var copyToPlugins = !string.Equals(projName, "AOSharp.Bootstrap", StringComparison.OrdinalIgnoreCase);
+                var primaryDll = await Task.Run(() => Build(csprojPath, projName, copyOutputToPlugins: copyToPlugins));
                 if (primaryDll == null)
                 {
                     Report(logName, $"Failed to build SDK library {projName}.", isError: true);
                     return false;
                 }
 
-                RegisterAoSharpSdkDllsFromOutputDir(compiledLibraries, GetPluginOutputPath(projName));
+                RegisterAoSharpSdkDllsFromOutputDir(compiledLibraries, Path.GetDirectoryName(primaryDll));
+                NormalizeCompiledSdkLibraryPaths(compiledLibraries, SdkReferencePreference.FreshBuild);
+                await Task.Run(ShutdownDotNetBuildServers);
             }
 
             SyncAoSharpSdkToBootstrapHostFolder(compiledLibraries);
+            RegisterAoSharpSdkDllsFromOutputDir(compiledLibraries, GetBootstrapHostDirectory());
+            NormalizeCompiledSdkLibraryPaths(compiledLibraries, SdkReferencePreference.LiveHost);
+            ApplyPendingBootstrapSdkUpdates();
+
+            foreach (var projName in AoSharpSdkLibraryBuildOrder)
+            {
+                var displayPath = ResolveSdkDisplayDllPath(projName, compiledLibraries);
+                if (displayPath != null)
+                    Report(projName, $"Ready: {displayPath}", dllPath: displayPath);
+            }
 
             return compiledLibraries.Any(l =>
                 string.Equals(l.packageId, "AOSharp.Core", StringComparison.OrdinalIgnoreCase) &&
@@ -460,7 +495,24 @@ namespace AOSharp.Services
             if (compiledLibraries == null)
                 return;
 
-            var hostDir = GetPluginOutputPath("AOSharp.Bootstrap");
+            try
+            {
+                SyncAoSharpSdkToBootstrapHostFolderCore(compiledLibraries);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex,
+                    "[RepoCompiler] Bootstrap host sync failed; check Plugins\\AOSharp.Bootstrap\\.update-staging.");
+            }
+        }
+
+        private static void SyncAoSharpSdkToBootstrapHostFolderCore(List<(string packageId, string dllPath)> compiledLibraries)
+        {
+            // Build outputs stay in bin/Plugins until all SDK projects finish; then shut down MSBuild
+            // nodes and copy once into the live NativeHost folder (Plugins\AOSharp.Bootstrap).
+            ShutdownDotNetBuildServers();
+
+            var hostDir = GetBootstrapHostDirectory();
             Directory.CreateDirectory(hostDir);
 
             foreach (var projName in AoSharpSdkLibraryBuildOrder)
@@ -474,21 +526,18 @@ namespace AOSharp.Services
                 if (string.IsNullOrEmpty(buildDir))
                     continue;
 
-                CopyTopLevelDllsFromBuildOutput(buildDir, hostDir, projName);
+                CopyTopLevelDllsToBootstrapHost(buildDir, hostDir, projName);
 
                 foreach (var ext in new[] { ".deps.json", ".runtimeconfig.json" })
                 {
                     var src = Path.Combine(buildDir, projName + ext);
                     if (!File.Exists(src))
                         continue;
-                    File.Copy(src, Path.Combine(hostDir, projName + ext), overwrite: true);
+                    CopyFileToBootstrapHostOrStage(src, Path.Combine(hostDir, projName + ext));
                 }
-
-                if (string.Equals(projName, "AOSharp.Bootstrap", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                EnsureBootstrapRuntimeConfig(hostDir, "AOSharp.Bootstrap");
             }
+
+            EnsureBootstrapRuntimeConfig(hostDir, "AOSharp.Bootstrap");
         }
 
         /// <summary>Ensures AOSharp.Core exists in the library list before compiling consumer plugins.</summary>
@@ -518,7 +567,7 @@ namespace AOSharp.Services
         /// and replaces them with local DLL hint paths — same role as NuGet substitution.
         /// </summary>
         public void InjectReferenceOverrides(string localPath, IEnumerable<(string packageId, string dllPath)> localLibraries,
-            IEnumerable<string> excludePackageIds = null)
+            IEnumerable<string> excludePackageIds = null, bool preferFreshSdkBuildOutputs = false)
         {
             const string msbuildNs = "http://schemas.microsoft.com/developer/msbuild/2003";
 
@@ -527,15 +576,12 @@ namespace AOSharp.Services
                 : new HashSet<string>(excludePackageIds.Where(id => !string.IsNullOrWhiteSpace(id)),
                     StringComparer.OrdinalIgnoreCase);
 
-            var libraries = (localLibraries ?? Enumerable.Empty<(string packageId, string dllPath)>())
-                .Where(t => !string.IsNullOrWhiteSpace(t.packageId) && !string.IsNullOrWhiteSpace(t.dllPath) &&
-                            File.Exists(t.dllPath) && !IsIntermediateAssemblyPath(t.dllPath))
-                .Where(t => exclude == null || !exclude.Contains(t.packageId.Trim()))
-                .Where(t => IsAoSharpSdkAssemblyStem(t.packageId.Trim()))
-                .Select(t => (packageId: t.packageId.Trim(), dllPath: Path.GetFullPath(t.dllPath.Trim())))
-                .GroupBy(t => t.packageId, StringComparer.OrdinalIgnoreCase)
-                .Select(g => g.First())
-                .OrderBy(t => t.packageId, StringComparer.OrdinalIgnoreCase)
+            var referencePreference = preferFreshSdkBuildOutputs
+                ? SdkReferencePreference.FreshBuild
+                : SdkReferencePreference.LiveHost;
+            var libraries = PreferSdkReferencePaths(
+                    localLibraries ?? Enumerable.Empty<(string packageId, string dllPath)>(), referencePreference)
+                .Where(t => exclude == null || !exclude.Contains(t.packageId))
                 .ToList();
 
             Log.Information($"[RepoCompiler] AOSharpLoader injection at '{localPath}': {libraries.Count} SDK DLL(s).");
@@ -919,7 +965,9 @@ namespace AOSharp.Services
                 "Release",
                 "-p:PlatformTarget=x86",
                 "-v:m",
-                "--nologo"
+                "--nologo",
+                "--disable-build-servers",
+                "-p:UseSharedCompilation=false"
             };
 
             if (!string.IsNullOrEmpty(slnReleasePlatform))
@@ -946,16 +994,317 @@ namespace AOSharp.Services
             return Path.Combine(Directories.PluginsDirPath, safe);
         }
 
+        private const string BootstrapStagingDirName = ".update-staging";
+
+        /// <summary>Runtime folder NativeHost loads (Plugins\AOSharp.Bootstrap).</summary>
+        public static string GetBootstrapHostDirectory() => GetPluginOutputPath("AOSharp.Bootstrap");
+
+        /// <summary>Best DLL path to show as compiled for an SDK project (host bundle, plugin folder, or last build output).</summary>
+        private static string ResolveSdkDisplayDllPath(string projectName,
+            List<(string packageId, string dllPath)> compiledLibraries)
+        {
+            if (string.IsNullOrWhiteSpace(projectName))
+                return null;
+
+            if (string.Equals(projectName, "AOSharp.Bootstrap", StringComparison.OrdinalIgnoreCase))
+            {
+                var hostDll = Path.Combine(GetBootstrapHostDirectory(), projectName + ".dll");
+                if (File.Exists(hostDll))
+                    return hostDll;
+            }
+
+            var pluginDll = Path.Combine(GetPluginOutputPath(projectName), projectName + ".dll");
+            if (File.Exists(pluginDll))
+                return pluginDll;
+
+            var entry = compiledLibraries?.FirstOrDefault(l =>
+                string.Equals(l.packageId, projectName, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(entry?.dllPath) && File.Exists(entry.Value.dllPath))
+                return entry.Value.dllPath;
+
+            return null;
+        }
+
+        private static string GetBootstrapStagingDirectory() =>
+            Path.Combine(GetBootstrapHostDirectory(), BootstrapStagingDirName);
+
+        /// <summary>SDK DLL in the live NativeHost host folder (Plugins\AOSharp.Bootstrap\*.dll).</summary>
+        private static bool IsBootstrapHostRuntimeFile(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+                return false;
+
+            try
+            {
+                var hostDir = Path.GetFullPath(GetBootstrapHostDirectory());
+                var fileDir = Path.GetFullPath(Path.GetDirectoryName(filePath) ?? string.Empty);
+                if (!string.Equals(fileDir, hostDir, StringComparison.OrdinalIgnoreCase))
+                    return false;
+                return IsAoSharpSdkAssemblyStem(Path.GetFileNameWithoutExtension(filePath));
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static int SdkReferencePathScore(string path, SdkReferencePreference preference)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return 0;
+
+            var inBin = path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}",
+                                StringComparison.OrdinalIgnoreCase) ||
+                        path.Contains($"{Path.AltDirectorySeparatorChar}bin{Path.AltDirectorySeparatorChar}",
+                            StringComparison.OrdinalIgnoreCase);
+            var inPluginProjectDir = path.Contains(
+                $"{Path.DirectorySeparatorChar}Plugins{Path.DirectorySeparatorChar}AOSharp.",
+                StringComparison.OrdinalIgnoreCase);
+            var inLiveHost = IsBootstrapHostRuntimeFile(path);
+
+            if (preference == SdkReferencePreference.FreshBuild)
+            {
+                if (inBin)
+                    return 5;
+                if (inPluginProjectDir && !inLiveHost)
+                    return 4;
+                if (inLiveHost)
+                    return 1;
+                return 2;
+            }
+
+            if (inLiveHost)
+                return 5;
+            if (inPluginProjectDir)
+                return 4;
+            if (inBin)
+                return 3;
+            return 1;
+        }
+
+        private static List<(string packageId, string dllPath)> PreferSdkReferencePaths(
+            IEnumerable<(string packageId, string dllPath)> libraries,
+            SdkReferencePreference preference = SdkReferencePreference.LiveHost)
+        {
+            var byId = new Dictionary<string, (string packageId, string dllPath)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in libraries)
+            {
+                if (string.IsNullOrWhiteSpace(entry.packageId) || string.IsNullOrWhiteSpace(entry.dllPath))
+                    continue;
+                if (!File.Exists(entry.dllPath) || IsIntermediateAssemblyPath(entry.dllPath))
+                    continue;
+
+                var normalized = (packageId: entry.packageId.Trim(), dllPath: Path.GetFullPath(entry.dllPath.Trim()));
+                if (!IsAoSharpSdkAssemblyStem(normalized.packageId) ||
+                    SdkReferencePathScore(normalized.dllPath, preference) <= 0)
+                    continue;
+
+                if (!byId.TryGetValue(normalized.packageId, out var existing) ||
+                    SdkReferencePathScore(normalized.dllPath, preference) >
+                    SdkReferencePathScore(existing.dllPath, preference))
+                    byId[normalized.packageId] = normalized;
+            }
+
+            return byId.Values.OrderBy(t => t.packageId, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        private static void NormalizeCompiledSdkLibraryPaths(List<(string packageId, string dllPath)> list,
+            SdkReferencePreference preference = SdkReferencePreference.LiveHost)
+        {
+            if (list == null || list.Count == 0)
+                return;
+
+            var normalized = PreferSdkReferencePaths(list, preference);
+            list.Clear();
+            list.AddRange(normalized);
+        }
+
+        /// <summary>True when a compile staged SDK files under Plugins\AOSharp.Bootstrap\.update-staging.</summary>
+        public static bool HasPendingBootstrapSdkUpdates()
+        {
+            var stagingDir = GetBootstrapStagingDirectory();
+            if (!Directory.Exists(stagingDir))
+                return false;
+
+            try
+            {
+                return Directory.EnumerateFileSystemEntries(stagingDir).Any();
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Applies staged SDK binaries into Plugins\AOSharp.Bootstrap when they are no longer locked.
+        /// </summary>
+        public static bool ApplyPendingBootstrapSdkUpdates()
+        {
+            var hostDir = GetBootstrapHostDirectory();
+            var stagingDir = GetBootstrapStagingDirectory();
+            if (!Directory.Exists(stagingDir))
+                return true;
+
+            Directory.CreateDirectory(hostDir);
+            var pending = false;
+
+            foreach (var stagedPath in Directory.EnumerateFiles(stagingDir))
+            {
+                var dest = Path.Combine(hostDir, Path.GetFileName(stagedPath));
+                if (TryCopyFileWithRetry(stagedPath, dest))
+                {
+                    try
+                    {
+                        File.Delete(stagedPath);
+                    }
+                    catch
+                    {
+                        pending = true;
+                    }
+                }
+                else
+                {
+                    pending = true;
+                }
+            }
+
+            TryDeleteDirectoryIfEmpty(stagingDir);
+            return !pending;
+        }
+
+        private static void TryDeleteDirectoryIfEmpty(string directoryPath)
+        {
+            try
+            {
+                if (Directory.Exists(directoryPath) && !Directory.EnumerateFileSystemEntries(directoryPath).Any())
+                    Directory.Delete(directoryPath);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private static bool IsFileSharingError(Exception ex)
+        {
+            if (ex is not IOException ioEx)
+                return ex is UnauthorizedAccessException;
+
+            if (ioEx.Message.Contains("being used by another process", StringComparison.OrdinalIgnoreCase) ||
+                ioEx.Message.Contains("because it is being used by another process", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            const int sharingViolation = unchecked((int)0x80070020);
+            const int lockViolation = unchecked((int)0x80070021);
+            var hresult = ioEx.HResult;
+            return hresult == sharingViolation || hresult == lockViolation ||
+                   (hresult & 0xFFFF) == 0x20 || (hresult & 0xFFFF) == 0x21;
+        }
+
+        private static bool TryCopyFileWithRetry(string sourceFile, string destFile, int maxAttempts = 6)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(destFile) ?? destFile);
+
+            for (var attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                try
+                {
+                    File.Copy(sourceFile, destFile, overwrite: true);
+                    return true;
+                }
+                catch (Exception ex) when (IsFileSharingError(ex))
+                {
+                    if (attempt < maxAttempts - 1)
+                        Thread.Sleep(150 * (attempt + 1));
+                }
+            }
+
+            return false;
+        }
+
+        private static void CopyFileWithRetryOrThrow(string sourceFile, string destFile)
+        {
+            if (!TryCopyFileWithRetry(sourceFile, destFile))
+                throw new IOException(
+                    $"The process cannot access the file '{destFile}' because it is being used by another process.");
+        }
+
+        private static void ShutdownDotNetBuildServers()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("dotnet")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                psi.ArgumentList.Add("build-server");
+                psi.ArgumentList.Add("shutdown");
+
+                using var process = Process.Start(psi);
+                process?.WaitForExit();
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "[RepoCompiler] dotnet build-server shutdown failed (non-fatal).");
+            }
+        }
+
+        private static void CopyFileToBootstrapHostOrStage(string sourceFile, string destFile)
+        {
+            if (TryCopyFileWithRetry(sourceFile, destFile))
+                return;
+
+            var stagingDir = GetBootstrapStagingDirectory();
+            Directory.CreateDirectory(stagingDir);
+            var stagedPath = Path.Combine(stagingDir, Path.GetFileName(destFile));
+            File.Copy(sourceFile, stagedPath, overwrite: true);
+            Log.Warning(
+                "[RepoCompiler] Could not update live {File} — copied to Plugins\\AOSharp.Bootstrap\\.update-staging. Restart the loader to apply.",
+                Path.GetFileName(destFile));
+        }
+
+        private static void CopyTopLevelDllsToBootstrapHost(string buildOutDir, string hostDir, string outputName)
+        {
+            if (string.IsNullOrEmpty(buildOutDir) || !Directory.Exists(buildOutDir))
+                return;
+
+            foreach (var dll in Directory.GetFiles(buildOutDir, "*.dll", SearchOption.TopDirectoryOnly))
+            {
+                var stem = Path.GetFileNameWithoutExtension(dll);
+                if (IsAoSharpSdkAssemblyStem(stem) &&
+                    !string.Equals(stem, outputName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                CopyFileToBootstrapHostOrStage(dll, Path.Combine(hostDir, Path.GetFileName(dll)));
+            }
+        }
+
+        private static void TryDeleteFileQuiet(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
         /// <summary>
         /// Builds a project to its default output folder, then copies DLLs into Plugins\{outputName}\.
         /// Returns the path to the primary output DLL under Plugins, or null on failure.
         /// </summary>
-        public string Build(string projectFile, string outputName)
+        public string Build(string projectFile, string outputName, bool copyOutputToPlugins = true)
         {
             Report(outputName, $"Building {Path.GetFileName(projectFile)}...");
 
             var pluginOutputDir = GetPluginOutputPath(outputName);
-            Directory.CreateDirectory(pluginOutputDir);
+            if (copyOutputToPlugins)
+                Directory.CreateDirectory(pluginOutputDir);
 
             string slnReleasePlatform = null;
             if (projectFile.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
@@ -989,19 +1338,26 @@ namespace AOSharp.Services
                 return null;
             }
 
-            try
+            if (copyOutputToPlugins)
             {
-                CopyTopLevelDllsFromBuildOutput(Path.GetDirectoryName(builtDll), pluginOutputDir, outputName);
-            }
-            catch (Exception ex)
-            {
-                Report(outputName, $"Build output copy failed: {ex.Message}", isError: true);
-                return null;
+                try
+                {
+                    CopyTopLevelDllsFromBuildOutput(Path.GetDirectoryName(builtDll), pluginOutputDir, outputName);
+                }
+                catch (Exception ex)
+                {
+                    Report(outputName, $"Build output copy failed: {ex.Message}", isError: true);
+                    return null;
+                }
+
+                var deployed = Path.Combine(pluginOutputDir, Path.GetFileName(builtDll));
+                var resultPath = File.Exists(deployed) ? deployed : builtDll;
+                Report(outputName, $"Built: {resultPath}", dllPath: resultPath);
+                return resultPath;
             }
 
-            var deployed = Path.Combine(pluginOutputDir, Path.GetFileName(builtDll));
-            Report(outputName, File.Exists(deployed) ? $"Built: {deployed}" : $"Built: {builtDll}");
-            return File.Exists(deployed) ? deployed : builtDll;
+            Report(outputName, $"Built: {builtDll}", dllPath: builtDll);
+            return builtDll;
         }
 
         /// <summary>
@@ -1023,7 +1379,7 @@ namespace AOSharp.Services
                     continue;
 
                 var dest = Path.Combine(pluginOutputDir, Path.GetFileName(dll));
-                File.Copy(dll, dest, overwrite: true);
+                CopyFileWithRetryOrThrow(dll, dest);
             }
 
             if (string.IsNullOrEmpty(outputName))
@@ -1034,11 +1390,8 @@ namespace AOSharp.Services
                 var src = Path.Combine(buildOutDir, outputName + ext);
                 if (!File.Exists(src))
                     continue;
-                File.Copy(src, Path.Combine(pluginOutputDir, outputName + ext), overwrite: true);
+                CopyFileWithRetryOrThrow(src, Path.Combine(pluginOutputDir, outputName + ext));
             }
-
-            if (string.Equals(outputName, "AOSharp.Bootstrap", StringComparison.OrdinalIgnoreCase))
-                EnsureBootstrapRuntimeConfig(pluginOutputDir, outputName);
         }
 
         /// <summary>
@@ -1325,6 +1678,7 @@ namespace AOSharp.Services
             var compiledLibraries = new List<(string packageId, string dllPath)>();
             AddBundledAoSharpSdkDllsWhereMissing(compiledLibraries);
             MergePrecompiledLibraries(compiledLibraries, precompiledLibraries);
+            NormalizeCompiledSdkLibraryPaths(compiledLibraries);
 
             // Group by repo URL; compile libraries first
             var groups = plugins
@@ -1389,6 +1743,7 @@ namespace AOSharp.Services
 
                 // Re-apply loader compiled libraries so SDK paths always win over discovery / other outputs (same as NuGet overrides).
                 MergePrecompiledLibraries(compiledLibraries, precompiledLibraries);
+                NormalizeCompiledSdkLibraryPaths(compiledLibraries);
 
                 var isSdkRepo = string.Equals(repoUrl, Config.AoSharpSdkRepoUrl, StringComparison.OrdinalIgnoreCase);
 
@@ -1455,9 +1810,7 @@ namespace AOSharp.Services
                         if (groupResult.NewEntries.ContainsKey(key))
                             continue;
 
-                        var projOutputDir = isSdkRepo
-                            ? GetPluginOutputPath(projName)
-                            : GetPluginOutputPath(repoName);
+                        var projOutputDir = GetPluginOutputPath(isSdkRepo ? projName : repoName);
                         var dllPath = ResolveProjectDll(projName, projOutputDir);
 
                         groupResult.NewEntries[key] = new PluginModel
@@ -1480,9 +1833,7 @@ namespace AOSharp.Services
                     // Update path on existing project entries
                     foreach (var (key, plugin) in projectEntries)
                     {
-                        var projOutputDir = isSdkRepo
-                            ? GetPluginOutputPath(plugin.Name)
-                            : GetPluginOutputPath(repoName);
+                        var projOutputDir = GetPluginOutputPath(isSdkRepo ? plugin.Name : repoName);
                         var dllPath = ResolveProjectDll(plugin.Name, projOutputDir);
                         if (dllPath != null)
                             plugin.Path = dllPath;
@@ -1493,6 +1844,7 @@ namespace AOSharp.Services
                 MergeAndNotify(result, groupResult, onGroupComplete);
             }
 
+            ApplyPendingBootstrapSdkUpdates();
             return result;
         }
 
