@@ -67,7 +67,7 @@ namespace AOSharp
             _updateCheckTimer.Start();
             _ = HandleCheckUpdatesAsync();
 
-            // Populate local commit hashes immediately (no network) so Version column is populated before fetch completes
+            // Populate local commit hashes immediately (no network) so Commit column is populated before fetch completes
             _ = Task.Run(() => InitializeLocalCommits());
         }
 
@@ -451,7 +451,7 @@ namespace AOSharp
 
         /// <summary>
         /// Reads local HEAD hashes for all already-cloned repos without any network access.
-        /// Called once at startup so the Version column is populated immediately.
+        /// Called once at startup so the Commit column is populated immediately.
         /// </summary>
         private void InitializeLocalCommits()
         {
@@ -488,12 +488,14 @@ namespace AOSharp
                 return;
             }
 
-            var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
+            var name = System.Diagnostics.FileVersionInfo.GetVersionInfo(path).ProductName;
+            if (string.IsNullOrWhiteSpace(name))
+                name = Path.GetFileNameWithoutExtension(path);
+
             _config.Plugins.Add(Utils.HashFromFile(path), new PluginModel
             {
                 PluginType = PluginType.Dll,
-                Name = info.ProductName,
-                Version = info.FileVersion,
+                Name = name,
                 Path = path,
                 Section = Models.PluginSections.Other
             });
@@ -649,7 +651,6 @@ namespace AOSharp
                     {
                         pluginType = kvp.Value.PluginType.ToString(),
                         name = kvp.Value.Name,
-                        version = kvp.Value.Version,
                         path = kvp.Value.Path,
                         repoUrl = kvp.Value.RepoUrl,
                         projectFilePath = kvp.Value.ProjectFilePath,

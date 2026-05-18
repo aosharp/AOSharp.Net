@@ -12,7 +12,6 @@ export interface RepoProject {
 export interface Plugin {
   pluginType: PluginType;
   name: string;
-  version: string | null;
   path: string;
   repoUrl: string | null;
   projectFilePath: string | null;

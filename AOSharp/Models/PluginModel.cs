@@ -22,8 +22,6 @@ namespace AOSharp
 
         public string Name { get; set; }
 
-        public string Version { get; set; }
-
         /// <summary>
         /// For Dll plugins: path to the DLL. For Repo plugins: path to the compiled DLL output (empty until compiled).
         /// </summary>

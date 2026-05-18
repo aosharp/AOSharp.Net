@@ -17,7 +17,7 @@ interface PendingUpdate {
   plugin: Plugin;
 }
 
-const COLUMN_COUNT = 8;
+const COLUMN_COUNT = 7;
 
 export function PluginsGrid() {
   const activeProfile = useStore(selectActiveProfile);
@@ -138,9 +138,8 @@ export function PluginsGrid() {
           <tr>
             <th style={{ ...thStyle, ...fitColStyle }}>Enabled</th>
             <th style={{ ...thStyle, ...fitColStyle }}>Name</th>
-            <th style={{ ...thStyle, ...fitColStyle }}>Version</th>
+            <th style={{ ...thStyle, ...fitColStyle }}>Commit</th>
             <th style={{ ...thStyle, ...fitColStyle }}>Source</th>
-            <th style={{ ...thStyle, ...fitColStyle }}>Type</th>
             <th style={{ ...thStyle, ...fitColStyle }}>Compiled</th>
             <th style={{ ...thStyle, ...fitColStyle }}>Author</th>
             <th style={thStyle}>Description</th>
@@ -216,14 +215,11 @@ export function PluginsGrid() {
                           )}
                         </div>
                       ) : (
-                        plugin.version ?? ''
+                        <span style={{ color: 'var(--color-text-muted)' }}>—</span>
                       )}
                     </td>
                     <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
                       {plugin.pluginType === 'Repo' ? 'Repo' : 'Disk'}
-                    </td>
-                    <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
-                      {plugin.isLibrary ? 'Library' : 'Plugin'}
                     </td>
                     <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
                       {plugin.pluginType === 'Repo' ? (
