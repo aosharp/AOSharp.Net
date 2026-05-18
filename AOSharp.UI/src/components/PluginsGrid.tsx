@@ -1,7 +1,8 @@
 import type { Plugin } from '../types';
 import { sendToHost } from '../bridge';
 import { selectActiveProfile, selectPluginsMap, selectProfiles, useStore } from '../store';
-import { useState, useEffect } from 'react';
+import { getPluginSection, PLUGIN_SECTIONS, type PluginSection } from '../pluginSections';
+import { Fragment, useState, useEffect, useMemo } from 'react';
 import '../index.css';
 
 interface ContextMenu {
@@ -16,6 +17,8 @@ interface PendingUpdate {
   plugin: Plugin;
 }
 
+const COLUMN_COUNT = 8;
+
 export function PluginsGrid() {
   const activeProfile = useStore(selectActiveProfile);
   const profiles = useStore(selectProfiles);
@@ -23,9 +26,20 @@ export function PluginsGrid() {
   const isLoading = useStore((s) => s.isLoading);
   const isCompiling = useStore((s) => s.isCompiling);
   const compileProgress = useStore((s) => s.compileProgress);
-  const plugins = Object.entries(pluginsMap).sort(([, a], [, b]) =>
-    a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-  );
+  const pluginsBySection = useMemo(() => {
+    const grouped = new Map<PluginSection, [string, Plugin][]>();
+    for (const section of PLUGIN_SECTIONS) grouped.set(section, []);
+    for (const entry of Object.entries(pluginsMap)) {
+      const section = getPluginSection(entry[1]);
+      grouped.get(section)!.push(entry);
+    }
+    for (const [, entries] of grouped) {
+      entries.sort(([, a], [, b]) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      );
+    }
+    return grouped;
+  }, [pluginsMap]);
   const [ctx, setCtx] = useState<ContextMenu | null>(null);
   const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
   const [trustRepoOnUpdate, setTrustRepoOnUpdate] = useState(false);
@@ -34,7 +48,6 @@ export function PluginsGrid() {
     if (pendingUpdate) setTrustRepoOnUpdate(false);
   }, [pendingUpdate]);
 
-  // Keys of plugins that are enabled on at least one currently-injected profile
   const injectedPluginKeys = new Set(
     profiles.filter((p) => p.isInjected).flatMap((p) => p.enabledPlugins)
   );
@@ -74,6 +87,7 @@ export function PluginsGrid() {
     position: 'sticky',
     top: 0,
     background: 'var(--color-surface)',
+    zIndex: 1,
   };
 
   const fitColStyle: React.CSSProperties = {
@@ -92,6 +106,17 @@ export function PluginsGrid() {
     ...tdBase(plugin),
     ...fitColStyle,
   });
+
+  const sectionHeaderStyle: React.CSSProperties = {
+    padding: '8px 8px 4px',
+    fontSize: 11,
+    fontWeight: 700,
+    letterSpacing: '0.06em',
+    textTransform: 'uppercase',
+    color: 'var(--color-text-muted)',
+    background: 'var(--color-surface)',
+    borderBottom: '1px solid var(--color-border)',
+  };
 
   if (isLoading) {
     return (
@@ -122,109 +147,123 @@ export function PluginsGrid() {
           </tr>
         </thead>
         <tbody>
-          {plugins.map(([key, plugin]) => (
-            <tr
-              key={key}
-              onContextMenu={(e) => handleContextMenu(e, key, plugin)}
-              style={{ cursor: 'default' }}
-              onMouseEnter={(e) =>
-                (e.currentTarget.style.background = 'var(--color-surface-hover)')
-              }
-              onMouseLeave={(e) =>
-                (e.currentTarget.style.background = 'transparent')
-              }
-            >
-              <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
-                <input
-                  type="checkbox"
-                  checked={plugin.isEnabled}
-                  disabled={plugin.isLibrary || !hasActiveProfile}
-                  title={!hasActiveProfile ? 'Select a profile to enable/disable plugins' : undefined}
-                  onChange={(e) => handleToggle(key, e.target.checked)}
-                  style={{ cursor: (plugin.isLibrary || !hasActiveProfile) ? 'default' : 'pointer' }}
-                />
-              </td>
-              <td style={tdStyle(plugin)}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
-                  {plugin.name}
-                  {plugin.pluginType === 'Repo' && plugin.hasUpdate && (
-                    <span
-                      title="Update available — right-click to update"
-                      style={{
-                        fontSize: 10,
-                        fontWeight: 700,
-                        color: '#f0c060',
-                        border: '1px solid #a06020',
-                        borderRadius: 3,
-                        padding: '1px 4px',
-                        flexShrink: 0,
-                        cursor: 'default',
-                      }}
-                    >
-                      UPDATE
-                    </span>
-                  )}
-                </span>
-              </td>
-              <td style={tdStyle(plugin)}>
-                {plugin.pluginType === 'Repo' ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                    <span style={{ fontFamily: 'monospace', color: 'var(--color-text-muted)' }}>
-                      {plugin.localCommit ?? '—'}
-                    </span>
-                    {plugin.remoteCommit && plugin.remoteCommit !== plugin.localCommit && (
-                      <span style={{ fontFamily: 'monospace', color: '#f0c060', fontSize: 11 }}>
-                        ↑ {plugin.remoteCommit}
+          {PLUGIN_SECTIONS.map((section) => {
+            const plugins = pluginsBySection.get(section)!;
+            if (plugins.length === 0) return null;
+            return (
+              <Fragment key={section}>
+                <tr>
+                  <td colSpan={COLUMN_COUNT} style={sectionHeaderStyle}>
+                    {section}
+                  </td>
+                </tr>
+                {plugins.map(([key, plugin]) => (
+                  <tr
+                    key={key}
+                    onContextMenu={(e) => handleContextMenu(e, key, plugin)}
+                    style={{ cursor: 'default' }}
+                    onMouseEnter={(e) =>
+                      (e.currentTarget.style.background = 'var(--color-surface-hover)')
+                    }
+                    onMouseLeave={(e) =>
+                      (e.currentTarget.style.background = 'transparent')
+                    }
+                  >
+                    <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
+                      {!plugin.isLibrary && (
+                        <input
+                          type="checkbox"
+                          checked={plugin.isEnabled}
+                          disabled={!hasActiveProfile}
+                          title={!hasActiveProfile ? 'Select a profile to enable/disable plugins' : undefined}
+                          onChange={(e) => handleToggle(key, e.target.checked)}
+                          style={{ cursor: hasActiveProfile ? 'pointer' : 'default' }}
+                        />
+                      )}
+                    </td>
+                    <td style={tdStyle(plugin)}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+                        {plugin.name}
+                        {plugin.pluginType === 'Repo' && plugin.hasUpdate && (
+                          <span
+                            title="Update available — right-click to update"
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              color: '#f0c060',
+                              border: '1px solid #a06020',
+                              borderRadius: 3,
+                              padding: '1px 4px',
+                              flexShrink: 0,
+                              cursor: 'default',
+                            }}
+                          >
+                            UPDATE
+                          </span>
+                        )}
                       </span>
-                    )}
-                  </div>
-                ) : (
-                  plugin.version ?? ''
-                )}
-              </td>
-              <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
-                {plugin.pluginType === 'Repo' ? 'Repo' : 'Disk'}
-              </td>
-              <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
-                {plugin.isLibrary ? 'Library' : 'Plugin'}
-              </td>
-              <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
-                {plugin.pluginType === 'Repo' ? (
-                  isCompiling && compileProgress?.pluginName === plugin.name ? (
-                    <div
-                      className="spinner"
-                      title={compileProgress.message}
-                      style={{ width: 12, height: 12, borderWidth: 2, display: 'inline-block' }}
-                    />
-                  ) : (
-                    <span style={{ color: plugin.isCompiled ? 'var(--color-green)' : 'var(--color-red)' }}>
-                      {plugin.isCompiled ? '✓' : '✗'}
-                    </span>
-                  )
-                ) : (
-                  <span style={{ color: 'var(--color-text-muted)' }}>—</span>
-                )}
-              </td>
-              <td style={tdStyle(plugin)} title={(plugin.author ?? '').trim() || undefined}>
-                {(plugin.author ?? '').trim() || '—'}
-              </td>
-              <td
-                style={{
-                  ...tdBase(plugin),
-                  whiteSpace: 'normal',
-                  wordBreak: 'break-word',
-                  lineHeight: 1.35,
-                }}
-                title={(plugin.description ?? '').trim() || undefined}
-              >
-                {(plugin.description ?? '').trim() || '—'}
-              </td>
-            </tr>
-          ))}
+                    </td>
+                    <td style={tdStyle(plugin)}>
+                      {plugin.pluginType === 'Repo' ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                          <span style={{ fontFamily: 'monospace', color: 'var(--color-text-muted)' }}>
+                            {plugin.localCommit ?? '—'}
+                          </span>
+                          {plugin.remoteCommit && plugin.remoteCommit !== plugin.localCommit && (
+                            <span style={{ fontFamily: 'monospace', color: '#f0c060', fontSize: 11 }}>
+                              ↑ {plugin.remoteCommit}
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        plugin.version ?? ''
+                      )}
+                    </td>
+                    <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
+                      {plugin.pluginType === 'Repo' ? 'Repo' : 'Disk'}
+                    </td>
+                    <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
+                      {plugin.isLibrary ? 'Library' : 'Plugin'}
+                    </td>
+                    <td style={{ ...tdStyle(plugin), textAlign: 'center' }}>
+                      {plugin.pluginType === 'Repo' ? (
+                        isCompiling && compileProgress?.pluginName === plugin.name ? (
+                          <div
+                            className="spinner"
+                            title={compileProgress.message}
+                            style={{ width: 12, height: 12, borderWidth: 2, display: 'inline-block' }}
+                          />
+                        ) : (
+                          <span style={{ color: plugin.isCompiled ? 'var(--color-green)' : 'var(--color-red)' }}>
+                            {plugin.isCompiled ? '✓' : '✗'}
+                          </span>
+                        )
+                      ) : (
+                        <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+                      )}
+                    </td>
+                    <td style={tdStyle(plugin)} title={(plugin.author ?? '').trim() || undefined}>
+                      {(plugin.author ?? '').trim() || '—'}
+                    </td>
+                    <td
+                      style={{
+                        ...tdBase(plugin),
+                        whiteSpace: 'normal',
+                        wordBreak: 'break-word',
+                        lineHeight: 1.35,
+                      }}
+                      title={(plugin.description ?? '').trim() || undefined}
+                    >
+                      {(plugin.description ?? '').trim() || '—'}
+                    </td>
+                  </tr>
+                ))}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
 
-      {/* Context menu */}
       {ctx && (
         <div
           style={{
@@ -309,7 +348,6 @@ export function PluginsGrid() {
         </div>
       )}
 
-      {/* Update confirmation modal for untrusted repos */}
       {pendingUpdate && (
         <div
           style={{

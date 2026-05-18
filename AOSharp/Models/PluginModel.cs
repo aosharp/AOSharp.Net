@@ -79,8 +79,15 @@ namespace AOSharp
 
         /// <summary>
         /// Libraries are compiled and referenced but never injected into the game process.
+        /// Set from Manifest.json <c>library</c> for repo projects.
         /// </summary>
         public bool IsLibrary { get; set; }
+
+        /// <summary>
+        /// UI grouping section (<see cref="PluginSections"/>). Libraries are always Library.
+        /// Set from Manifest.json <c>section</c> for repo projects; DLL plugins default to Other.
+        /// </summary>
+        public string Section { get; set; }
 
         [JsonIgnore]
         public bool IsDefault { get; set; }

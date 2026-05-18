@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using AOSharp;
 using Newtonsoft.Json;
 
 namespace AOSharp.Models
@@ -16,6 +17,13 @@ namespace AOSharp.Models
 
         [JsonProperty("description")]
         public string Description { get; set; }
+
+        [JsonProperty("library")]
+        public bool? Library { get; set; }
+
+        /// <summary>One of <see cref="PluginSections"/> (except libraries, which are always Library).</summary>
+        [JsonProperty("section")]
+        public string Section { get; set; }
 
         [JsonProperty("dependencies")]
         public List<string> Dependencies { get; set; }
@@ -56,10 +64,48 @@ namespace AOSharp.Models
             return CloneDefaults(Empty);
         }
 
+        public bool IsLibrary => Library == true;
+
+        public string ResolveSection()
+        {
+            if (IsLibrary)
+                return PluginSections.Library;
+            return PluginSections.Normalize(Section);
+        }
+
+        /// <summary>Reads manifest metadata for a repo project, or falls back to stored plugin fields.</summary>
+        public static bool GetEffectiveIsLibrary(PluginModel plugin)
+        {
+            if (TryLoadForPlugin(plugin, out var manifest))
+                return manifest.IsLibrary;
+            return plugin.IsLibrary;
+        }
+
+        public static string GetEffectiveSection(PluginModel plugin)
+        {
+            if (GetEffectiveIsLibrary(plugin))
+                return PluginSections.Library;
+            if (TryLoadForPlugin(plugin, out var manifest))
+                return manifest.ResolveSection();
+            return PluginSections.Normalize(plugin.Section);
+        }
+
+        private static bool TryLoadForPlugin(PluginModel plugin, out PluginManifest manifest)
+        {
+            manifest = null;
+            if (plugin?.PluginType != PluginType.Repo || string.IsNullOrEmpty(plugin.ProjectFilePath) ||
+                !File.Exists(plugin.ProjectFilePath))
+                return false;
+
+            manifest = LoadForProject(plugin.ProjectFilePath);
+            return true;
+        }
+
         private static PluginManifest Normalize(PluginManifest m)
         {
             m.Author = m.Author?.Trim();
             m.Description = m.Description?.Trim();
+            m.Section = m.Section?.Trim();
             m.Dependencies = m.Dependencies?
                 .Where(u => !string.IsNullOrWhiteSpace(u))
                 .Select(u => u.Trim())
@@ -74,6 +120,8 @@ namespace AOSharp.Models
             {
                 Author = source.Author,
                 Description = source.Description,
+                Library = source.Library,
+                Section = source.Section,
                 Dependencies = source.Dependencies != null
                     ? new List<string>(source.Dependencies)
                     : new List<string>()

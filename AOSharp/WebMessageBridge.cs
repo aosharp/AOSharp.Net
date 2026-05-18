@@ -494,7 +494,8 @@ namespace AOSharp
                 PluginType = PluginType.Dll,
                 Name = info.ProductName,
                 Version = info.FileVersion,
-                Path = path
+                Path = path,
+                Section = Models.PluginSections.Other
             });
         }
 
@@ -524,6 +525,7 @@ namespace AOSharp
                     name = p.name,
                     path = p.csprojPath,
                     isLibrary = p.isLibrary,
+                    section = p.section,
                     author = p.author,
                     description = p.description
                 })
@@ -549,14 +551,12 @@ namespace AOSharp
             }
 
             var name = Path.GetFileNameWithoutExtension(projectFilePath);
-            bool isLibrary = RepoCompiler.ReadIsLibrary(projectFilePath);
 
             var plugin = new PluginModel
             {
                 PluginType = PluginType.Repo,
                 Name = name,
                 RepoUrl = url,
-                IsLibrary = isLibrary,
                 ProjectFilePath = projectFilePath,
                 Path = string.Empty
             };
@@ -655,7 +655,8 @@ namespace AOSharp
                         projectFilePath = kvp.Value.ProjectFilePath,
                         isStub = kvp.Value.IsStub,
                         autoUpdate = kvp.Value.AutoUpdate,
-                        isLibrary = kvp.Value.IsLibrary,
+                        isLibrary = PluginManifest.GetEffectiveIsLibrary(kvp.Value),
+                        section = PluginManifest.GetEffectiveSection(kvp.Value),
                         isDefault = kvp.Value.IsDefault,
                         isCompiled = kvp.Value.IsCompiled,
                         isEnabled = kvp.Value.IsEnabled,
@@ -712,6 +713,8 @@ namespace AOSharp
                         existing.Path = kvp.Value.Path;
                         existing.Author = kvp.Value.Author;
                         existing.Description = kvp.Value.Description;
+                        existing.IsLibrary = kvp.Value.IsLibrary;
+                        existing.Section = kvp.Value.Section;
                         existing.DependencyRepoUrls = kvp.Value.DependencyRepoUrls != null
                             ? new List<string>(kvp.Value.DependencyRepoUrls)
                             : new List<string>();

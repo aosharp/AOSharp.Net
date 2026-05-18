@@ -74,6 +74,7 @@ namespace AOSharp
                     PluginType = PluginType.Repo,
                     RepoUrl = AoSharpSdkRepoUrl,
                     IsLibrary = true,
+                    Section = Models.PluginSections.Library,
                     AutoUpdate = true,
                     IsDefault = true
                 });

@@ -4,6 +4,7 @@ export interface RepoProject {
   name: string;
   path: string;
   isLibrary: boolean;
+  section?: string | null;
   author?: string | null;
   description?: string | null;
 }
@@ -18,6 +19,7 @@ export interface Plugin {
   isStub: boolean;
   autoUpdate: boolean;
   isLibrary: boolean;
+  section?: string | null;
   isDefault: boolean;
   isCompiled: boolean;
   isEnabled: boolean;

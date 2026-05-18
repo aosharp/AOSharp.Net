@@ -4,7 +4,7 @@
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="AO#"
         Height="480"
-        Width="860"
+        Width="1000"
         WindowStyle="SingleBorderWindow"
         Background="#1e1e2e">
     <Grid>

@@ -235,7 +235,7 @@ namespace AOSharp.Services
         /// <summary>
         /// Returns all .csproj files found in the repo directory, along with library flag and optional Manifest.json metadata.
         /// </summary>
-        public List<(string name, string csprojPath, bool isLibrary, string author, string description, List<string> dependencyRepoUrls)>
+        public List<(string name, string csprojPath, bool isLibrary, string section, string author, string description, List<string> dependencyRepoUrls)>
             DiscoverProjects(string localRepoPath)
         {
             var csprojs = Directory.GetFiles(localRepoPath, "*.csproj", SearchOption.AllDirectories);
@@ -244,10 +244,12 @@ namespace AOSharp.Services
                 .Select(p =>
                 {
                     var manifest = PluginManifest.LoadForProject(p);
+                    var isLibrary = manifest.IsLibrary;
                     return (
                         Path.GetFileNameWithoutExtension(p),
                         p,
-                        ReadIsLibrary(p),
+                        isLibrary,
+                        manifest.ResolveSection(),
                         manifest.Author,
                         manifest.Description,
                         manifest.Dependencies ?? new List<string>());
@@ -277,24 +279,6 @@ namespace AOSharp.Services
             }
 
             return set;
-        }
-
-        /// <summary>
-        /// Reads the &lt;AOSharpLibrary&gt; property from a .csproj file.
-        /// Returns true only when the property is explicitly set to "true".
-        /// </summary>
-        public static bool ReadIsLibrary(string csprojPath)
-        {
-            try
-            {
-                var doc = XDocument.Load(csprojPath);
-                var value = doc.Descendants("AOSharpLibrary").FirstOrDefault()?.Value;
-                return string.Equals(value?.Trim(), "true", StringComparison.OrdinalIgnoreCase);
-            }
-            catch
-            {
-                return false;
-            }
         }
 
         // ── Reference overrides ────────────────────────────────────────────────
@@ -1818,6 +1802,8 @@ namespace AOSharp.Services
             var m = PluginManifest.LoadForProject(plugin.ProjectFilePath);
             plugin.Author = m.Author;
             plugin.Description = m.Description;
+            plugin.IsLibrary = m.IsLibrary;
+            plugin.Section = m.ResolveSection();
             plugin.DependencyRepoUrls = m.Dependencies != null ? new List<string>(m.Dependencies) : new List<string>();
         }
 
@@ -2101,7 +2087,7 @@ namespace AOSharp.Services
                     foreach (var stub in stubs)
                         groupResult.KeysToRemove.Add(stub.Key);
 
-                    foreach (var (projName, csprojPath, projIsLibrary, author, description, depUrls) in discoveredProjects)
+                    foreach (var (projName, csprojPath, projIsLibrary, section, author, description, depUrls) in discoveredProjects)
                     {
                         var relPath = Path.GetRelativePath(localPath, csprojPath);
                         var key = Utils.HashFromString(repoUrl + "|" + relPath);
@@ -2119,6 +2105,7 @@ namespace AOSharp.Services
                             RepoUrl = repoUrl,
                             ProjectFilePath = csprojPath,
                             IsLibrary = projIsLibrary,
+                            Section = section,
                             AutoUpdate = representative.AutoUpdate,
                             Path = dllPath ?? string.Empty,
                             Author = author,
@@ -2235,7 +2222,7 @@ namespace AOSharp.Services
                 {
                     result.KeysToRemove.Add(pluginKey);
                     var discovered = await Task.Run(() => DiscoverProjects(localPath));
-                    foreach (var (projName, csprojPath, projIsLibrary, author, description, depUrls) in discovered)
+                    foreach (var (projName, csprojPath, projIsLibrary, section, author, description, depUrls) in discovered)
                     {
                         var relPath = Path.GetRelativePath(localPath, csprojPath);
                         var key = Utils.HashFromString(plugin.RepoUrl + "|" + relPath);
@@ -2247,6 +2234,7 @@ namespace AOSharp.Services
                             RepoUrl = plugin.RepoUrl,
                             ProjectFilePath = csprojPath,
                             IsLibrary = projIsLibrary,
+                            Section = section,
                             AutoUpdate = plugin.AutoUpdate,
                             Path = dllPath ?? string.Empty,
                             Author = author,
@@ -2290,7 +2278,7 @@ namespace AOSharp.Services
                 var outputDir = GetPluginOutputPath(plugin.Name);
                 var discovered = await Task.Run(() => DiscoverProjects(localPath));
 
-                foreach (var (projName, csprojPath, projIsLibrary, author, description, depUrls) in discovered)
+                foreach (var (projName, csprojPath, projIsLibrary, section, author, description, depUrls) in discovered)
                 {
                     var relPath = Path.GetRelativePath(localPath, csprojPath);
                     var key = Utils.HashFromString(plugin.RepoUrl + "|" + relPath);
@@ -2303,6 +2291,7 @@ namespace AOSharp.Services
                         RepoUrl = plugin.RepoUrl,
                         ProjectFilePath = csprojPath,
                         IsLibrary = projIsLibrary,
+                        Section = section,
                         AutoUpdate = plugin.AutoUpdate,
                         Path = dllPath ?? string.Empty,
                         Author = author,
