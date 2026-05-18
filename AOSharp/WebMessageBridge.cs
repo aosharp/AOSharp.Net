@@ -60,14 +60,14 @@ namespace AOSharp
                 SendState();
             };
 
-            // Background update checks: initial after 30 s, then every 5 min
+            // Background update checks: once at startup, then every 5 min
             _updateCheckTimer = new Timer(TimeSpan.FromMinutes(5).TotalMilliseconds);
             _updateCheckTimer.Elapsed += async (_, _) => await HandleCheckUpdatesAsync();
             _updateCheckTimer.AutoReset = true;
             _updateCheckTimer.Start();
-            _ = Task.Delay(TimeSpan.FromSeconds(30)).ContinueWith(_ => HandleCheckUpdatesAsync());
+            _ = HandleCheckUpdatesAsync();
 
-            // Populate local commit hashes immediately (no network) so Version column is populated on first open
+            // Populate local commit hashes immediately (no network) so Version column is populated before fetch completes
             _ = Task.Run(() => InitializeLocalCommits());
         }
 
