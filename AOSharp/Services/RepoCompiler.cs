@@ -630,6 +630,7 @@ namespace AOSharp.Services
                     continue;
 
                 CopyTopLevelDllsToBootstrapHost(buildDir, hostDir, projName);
+                CopyNativeAssetsFromBuildOutput(buildDir, hostDir, useBootstrapStaging: true);
 
                 foreach (var ext in new[] { ".deps.json", ".runtimeconfig.json" })
                 {
@@ -1384,6 +1385,31 @@ namespace AOSharp.Services
             }
         }
 
+        /// <summary>
+        /// Recursively copies <c>runtimes\</c> from build output (e.g. <c>runtimes\win-x86\native\e_sqlite3.dll</c>)
+        /// so <see cref="AssemblyDependencyResolver"/> can resolve native assets next to the plugin DLL.
+        /// </summary>
+        private static void CopyNativeAssetsFromBuildOutput(string buildOutDir, string pluginOutputDir, bool useBootstrapStaging)
+        {
+            if (string.IsNullOrEmpty(buildOutDir) || string.IsNullOrEmpty(pluginOutputDir))
+                return;
+
+            var sourceRuntimes = Path.Combine(buildOutDir, "runtimes");
+            if (!Directory.Exists(sourceRuntimes))
+                return;
+
+            var destRuntimes = Path.Combine(pluginOutputDir, "runtimes");
+            foreach (var file in Directory.EnumerateFiles(sourceRuntimes, "*", SearchOption.AllDirectories))
+            {
+                var relative = Path.GetRelativePath(sourceRuntimes, file);
+                var destFile = Path.Combine(destRuntimes, relative);
+                if (useBootstrapStaging)
+                    CopyFileToBootstrapHostOrStage(file, destFile);
+                else
+                    CopyFileWithRetryOrThrow(file, destFile);
+            }
+        }
+
         private static void TryDeleteFileQuiet(string path)
         {
             try
@@ -1445,7 +1471,11 @@ namespace AOSharp.Services
             {
                 try
                 {
-                    CopyTopLevelDllsFromBuildOutput(Path.GetDirectoryName(builtDll), pluginOutputDir, outputName);
+                    CopyTopLevelDllsFromBuildOutput(
+                        Path.GetDirectoryName(builtDll),
+                        pluginOutputDir,
+                        outputName,
+                        Path.GetFileNameWithoutExtension(builtDll));
                 }
                 catch (Exception ex)
                 {
@@ -1464,11 +1494,15 @@ namespace AOSharp.Services
         }
 
         /// <summary>
-        /// Copies runtime artifacts from the project's build output into Plugins\{outputName}\.
+        /// Copies build output into Plugins\{outputName}\: top-level DLLs, deps/runtimeconfig,
+        /// and the <c>runtimes\</c> tree for native libraries (SQLite, etc.).
         /// Skips other AOSharp.SDK DLLs so a Common build does not drop Core into Plugins\Common.
-        /// Includes runtimeconfig/deps for NativeHost (AOSharp.Bootstrap).
         /// </summary>
-        private static void CopyTopLevelDllsFromBuildOutput(string buildOutDir, string pluginOutputDir, string outputName)
+        private static void CopyTopLevelDllsFromBuildOutput(
+            string buildOutDir,
+            string pluginOutputDir,
+            string outputName,
+            string primaryAssemblyName = null)
         {
             if (string.IsNullOrEmpty(buildOutDir) || !Directory.Exists(buildOutDir))
                 return;
@@ -1485,16 +1519,24 @@ namespace AOSharp.Services
                 CopyFileWithRetryOrThrow(dll, dest);
             }
 
-            if (string.IsNullOrEmpty(outputName))
-                return;
+            var depsNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrEmpty(outputName))
+                depsNames.Add(outputName);
+            if (!string.IsNullOrWhiteSpace(primaryAssemblyName))
+                depsNames.Add(primaryAssemblyName);
 
-            foreach (var ext in new[] { ".runtimeconfig.json", ".deps.json" })
+            foreach (var name in depsNames)
             {
-                var src = Path.Combine(buildOutDir, outputName + ext);
-                if (!File.Exists(src))
-                    continue;
-                CopyFileWithRetryOrThrow(src, Path.Combine(pluginOutputDir, outputName + ext));
+                foreach (var ext in new[] { ".runtimeconfig.json", ".deps.json" })
+                {
+                    var src = Path.Combine(buildOutDir, name + ext);
+                    if (!File.Exists(src))
+                        continue;
+                    CopyFileWithRetryOrThrow(src, Path.Combine(pluginOutputDir, name + ext));
+                }
             }
+
+            CopyNativeAssetsFromBuildOutput(buildOutDir, pluginOutputDir, useBootstrapStaging: false);
         }
 
         /// <summary>
