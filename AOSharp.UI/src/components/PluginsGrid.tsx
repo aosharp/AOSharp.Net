@@ -71,21 +71,26 @@ export function PluginsGrid() {
     color: 'var(--color-text-muted)',
     fontSize: 12,
     fontWeight: 600,
-    whiteSpace: 'nowrap',
     position: 'sticky',
     top: 0,
     background: 'var(--color-surface)',
   };
 
-  const tdStyle = (plugin: Plugin): React.CSSProperties => ({
+  const fitColStyle: React.CSSProperties = {
+    width: 0,
+    whiteSpace: 'nowrap',
+  };
+
+  const tdBase = (plugin: Plugin): React.CSSProperties => ({
     padding: '5px 8px',
     fontSize: 12,
     color: plugin.path?.includes('\\obj\\') ? 'var(--color-red)' : 'var(--color-text)',
     fontStyle: plugin.isDefault ? 'italic' : 'normal',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    maxWidth: 260,
+  });
+
+  const tdStyle = (plugin: Plugin): React.CSSProperties => ({
+    ...tdBase(plugin),
+    ...fitColStyle,
   });
 
   if (isLoading) {
@@ -106,14 +111,14 @@ export function PluginsGrid() {
       >
         <thead>
           <tr>
-            <th style={{ ...thStyle, width: 60 }}>Enabled</th>
-            <th style={{ ...thStyle, width: 160 }}>Name</th>
-            <th style={{ ...thStyle, width: 110 }}>Version</th>
-            <th style={{ ...thStyle, width: 60 }}>Source</th>
-            <th style={{ ...thStyle, width: 65 }}>Type</th>
-            <th style={{ ...thStyle, width: 65 }}>Compiled</th>
-            <th style={{ ...thStyle, width: 120 }}>Author</th>
-            <th style={{ ...thStyle }}>Description</th>
+            <th style={{ ...thStyle, ...fitColStyle }}>Enabled</th>
+            <th style={{ ...thStyle, ...fitColStyle }}>Name</th>
+            <th style={{ ...thStyle, ...fitColStyle }}>Version</th>
+            <th style={{ ...thStyle, ...fitColStyle }}>Source</th>
+            <th style={{ ...thStyle, ...fitColStyle }}>Type</th>
+            <th style={{ ...thStyle, ...fitColStyle }}>Compiled</th>
+            <th style={{ ...thStyle, ...fitColStyle }}>Author</th>
+            <th style={thStyle}>Description</th>
           </tr>
         </thead>
         <tbody>
@@ -139,27 +144,27 @@ export function PluginsGrid() {
                   style={{ cursor: (plugin.isLibrary || !hasActiveProfile) ? 'default' : 'pointer' }}
                 />
               </td>
-              <td style={{ ...tdStyle(plugin), display: 'flex', alignItems: 'center', gap: 6, maxWidth: 'unset', width: 160 }}>
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
+              <td style={tdStyle(plugin)}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
                   {plugin.name}
+                  {plugin.pluginType === 'Repo' && plugin.hasUpdate && (
+                    <span
+                      title="Update available — right-click to update"
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: '#f0c060',
+                        border: '1px solid #a06020',
+                        borderRadius: 3,
+                        padding: '1px 4px',
+                        flexShrink: 0,
+                        cursor: 'default',
+                      }}
+                    >
+                      UPDATE
+                    </span>
+                  )}
                 </span>
-                {plugin.pluginType === 'Repo' && plugin.hasUpdate && (
-                  <span
-                    title="Update available — right-click to update"
-                    style={{
-                      fontSize: 10,
-                      fontWeight: 700,
-                      color: '#f0c060',
-                      border: '1px solid #a06020',
-                      borderRadius: 3,
-                      padding: '1px 4px',
-                      flexShrink: 0,
-                      cursor: 'default',
-                    }}
-                  >
-                    UPDATE
-                  </span>
-                )}
               </td>
               <td style={tdStyle(plugin)}>
                 {plugin.pluginType === 'Repo' ? (
@@ -200,13 +205,12 @@ export function PluginsGrid() {
                   <span style={{ color: 'var(--color-text-muted)' }}>—</span>
                 )}
               </td>
-              <td style={{ ...tdStyle(plugin), maxWidth: 140 }} title={(plugin.author ?? '').trim() || undefined}>
+              <td style={tdStyle(plugin)} title={(plugin.author ?? '').trim() || undefined}>
                 {(plugin.author ?? '').trim() || '—'}
               </td>
               <td
                 style={{
-                  ...tdStyle(plugin),
-                  maxWidth: 'unset',
+                  ...tdBase(plugin),
                   whiteSpace: 'normal',
                   wordBreak: 'break-word',
                   lineHeight: 1.35,
