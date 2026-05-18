@@ -115,16 +115,119 @@ namespace AOSharp.Services
             return output.FirstOrDefault(l => !string.IsNullOrWhiteSpace(l))?.Trim();
         }
 
+        private static readonly string[] LoaderInjectionFileNames =
+        {
+            "AOSharpLoader.props",
+            "AOSharpLoader.targets"
+        };
+
+        /// <summary>
+        /// Removes loader-owned MSBuild overrides and discards tracked edits (e.g. TFM bumps)
+        /// so <c>git pull --ff-only</c> can succeed after a prior compile.
+        /// </summary>
+        private void PrepareRepoForGitOperation(string localPath)
+        {
+            if (string.IsNullOrEmpty(localPath) || !Directory.Exists(Path.Combine(localPath, ".git")))
+                return;
+
+            foreach (var name in LoaderInjectionFileNames)
+            {
+                var path = Path.Combine(localPath, name);
+                if (!File.Exists(path))
+                    continue;
+                try
+                {
+                    File.Delete(path);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "Could not delete {Path} before git operation", path);
+                }
+            }
+
+            RevertDirectoryBuildPropsForGit(localPath);
+
+            var output = new List<string>();
+            if (!RunProcess("git", "checkout -- .", localPath, output))
+                LogGitFailure(localPath, "checkout -- .", output);
+        }
+
+        private static void RevertDirectoryBuildPropsForGit(string localPath)
+        {
+            var dirBuildProps = Path.Combine(localPath, "Directory.Build.props");
+            if (!File.Exists(dirBuildProps))
+                return;
+
+            try
+            {
+                var content = File.ReadAllText(dirBuildProps);
+                if (!content.Contains("AOSharpLoader.props", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                if (IsAoSharpOnlyDirectoryBuildProps(content))
+                {
+                    File.Delete(dirBuildProps);
+                    return;
+                }
+
+                var importLine =
+                    "  <Import Project=\"AOSharpLoader.props\" Condition=\"Exists('AOSharpLoader.props')\" />";
+                var updated = content.Replace(importLine + Environment.NewLine, string.Empty)
+                    .Replace(importLine, string.Empty);
+                if (IsAoSharpOnlyDirectoryBuildProps(updated))
+                    File.Delete(dirBuildProps);
+                else
+                    File.WriteAllText(dirBuildProps, updated, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Could not revert Directory.Build.props before git operation");
+            }
+        }
+
+        private static bool IsAoSharpOnlyDirectoryBuildProps(string content)
+        {
+            if (string.IsNullOrWhiteSpace(content))
+                return true;
+
+            return !Regex.IsMatch(content,
+                @"<(TargetFramework|TargetFrameworks|PackageReference|ProjectReference|PropertyGroup\s)",
+                RegexOptions.IgnoreCase);
+        }
+
+        private void LogGitFailure(string localPath, string gitCommand, List<string> output)
+        {
+            var detail = string.Join(Environment.NewLine,
+                output.Where(l => !string.IsNullOrWhiteSpace(l)).Take(12));
+            if (string.IsNullOrWhiteSpace(detail))
+                detail = "(no git output)";
+            Log.Information("[RepoCompiler] git {Command} failed in {Path}:{NewLine}{Detail}",
+                gitCommand, localPath, Environment.NewLine, detail);
+        }
+
         /// <summary>
         /// Clones the repo if not present locally, or pulls latest changes if it is.
         /// </summary>
         public bool CloneOrPull(string repoUrl, string localPath)
         {
             if (Directory.Exists(Path.Combine(localPath, ".git")))
-                return RunGit(localPath, "pull --ff-only");
+            {
+                PrepareRepoForGitOperation(localPath);
+                var output = new List<string>();
+                if (RunProcess("git", "pull --ff-only", localPath, output))
+                    return true;
+
+                LogGitFailure(localPath, "pull --ff-only", output);
+                return false;
+            }
 
             Directory.CreateDirectory(localPath);
-            return RunGit(Directories.ReposDirPath, $"clone \"{repoUrl}\" \"{localPath}\"");
+            var cloneOutput = new List<string>();
+            if (RunProcess("git", $"clone \"{repoUrl}\" \"{localPath}\"", Directories.ReposDirPath, cloneOutput))
+                return true;
+
+            LogGitFailure(Directories.ReposDirPath, $"clone {repoUrl}", cloneOutput);
+            return false;
         }
 
         // ── Project discovery ──────────────────────────────────────────────────
@@ -1967,7 +2070,9 @@ namespace AOSharp.Services
                 return result;
             }
 
-            var buildTarget = FindBuildTarget(localPath);
+            var buildTarget = !string.IsNullOrWhiteSpace(plugin.ProjectFilePath) && File.Exists(plugin.ProjectFilePath)
+                ? plugin.ProjectFilePath
+                : FindBuildTarget(localPath);
             if (buildTarget == null)
             {
                 Report(plugin.Name, "No .csproj found.", isError: true);
