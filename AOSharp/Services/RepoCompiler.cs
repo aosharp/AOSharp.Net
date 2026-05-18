@@ -216,7 +216,7 @@ namespace AOSharp.Services
                 {
                     foreach (var path in Directory.EnumerateFiles(root, "*.dll", SearchOption.AllDirectories))
                     {
-                        if (IsUnderRefDirectory(path))
+                        if (IsIntermediateAssemblyPath(path))
                             continue;
                         var id = Path.GetFileNameWithoutExtension(path);
                         if (!IsAoSharpSdkAssemblyStem(id))
@@ -255,7 +255,7 @@ namespace AOSharp.Services
             {
                 foreach (var path in Directory.EnumerateFiles(cloneRoot, "AOSharp.*.dll", SearchOption.AllDirectories))
                 {
-                    if (IsUnderRefDirectory(path))
+                    if (IsIntermediateAssemblyPath(path))
                         continue;
                     var idx = path.IndexOf($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase);
                     if (idx < 0)
@@ -346,7 +346,7 @@ namespace AOSharp.Services
         private static void UpsertCompiledLibrary(List<(string packageId, string dllPath)> list, (string packageId, string dllPath) entry)
         {
             if (string.IsNullOrWhiteSpace(entry.packageId) || string.IsNullOrWhiteSpace(entry.dllPath) ||
-                !File.Exists(entry.dllPath))
+                !File.Exists(entry.dllPath) || IsIntermediateAssemblyPath(entry.dllPath))
                 return;
             if (string.Equals(entry.packageId.Trim(), "AOSharp", StringComparison.OrdinalIgnoreCase))
                 return;
@@ -433,7 +433,7 @@ namespace AOSharp.Services
                 if (!libraryProjects.TryGetValue(projName, out var csprojPath))
                     continue;
 
-                await Task.Run(() => InjectReferenceOverrides(sdkLocalPath, compiledLibraries));
+                await Task.Run(() => InjectReferenceOverrides(sdkLocalPath, compiledLibraries, excludePackageIds: new[] { projName }));
 
                 var primaryDll = await Task.Run(() => Build(csprojPath, projName));
                 if (primaryDll == null)
@@ -517,13 +517,20 @@ namespace AOSharp.Services
         /// stale <c>Reference</c> whose filename starts with <c>AOSharp.</c> (including strong-named includes)
         /// and replaces them with local DLL hint paths — same role as NuGet substitution.
         /// </summary>
-        public void InjectReferenceOverrides(string localPath, IEnumerable<(string packageId, string dllPath)> localLibraries)
+        public void InjectReferenceOverrides(string localPath, IEnumerable<(string packageId, string dllPath)> localLibraries,
+            IEnumerable<string> excludePackageIds = null)
         {
             const string msbuildNs = "http://schemas.microsoft.com/developer/msbuild/2003";
 
+            var exclude = excludePackageIds == null
+                ? null
+                : new HashSet<string>(excludePackageIds.Where(id => !string.IsNullOrWhiteSpace(id)),
+                    StringComparer.OrdinalIgnoreCase);
+
             var libraries = (localLibraries ?? Enumerable.Empty<(string packageId, string dllPath)>())
                 .Where(t => !string.IsNullOrWhiteSpace(t.packageId) && !string.IsNullOrWhiteSpace(t.dllPath) &&
-                            File.Exists(t.dllPath))
+                            File.Exists(t.dllPath) && !IsIntermediateAssemblyPath(t.dllPath))
+                .Where(t => exclude == null || !exclude.Contains(t.packageId.Trim()))
                 .Where(t => IsAoSharpSdkAssemblyStem(t.packageId.Trim()))
                 .Select(t => (packageId: t.packageId.Trim(), dllPath: Path.GetFullPath(t.dllPath.Trim())))
                 .GroupBy(t => t.packageId, StringComparer.OrdinalIgnoreCase)
@@ -1081,7 +1088,7 @@ namespace AOSharp.Services
             try
             {
                 return Directory.EnumerateFiles(binRelease, assemblyName + ".dll", SearchOption.AllDirectories)
-                    .FirstOrDefault(p => !IsUnderRefDirectory(p));
+                    .FirstOrDefault(p => !IsIntermediateAssemblyPath(p));
             }
             catch
             {
@@ -1089,10 +1096,29 @@ namespace AOSharp.Services
             }
         }
 
-        private static bool IsUnderRefDirectory(string filePath)
+        /// <summary>
+        /// True for MSBuild intermediate outputs (obj, ref, refint) that must not be used as injected SDK references.
+        /// </summary>
+        private static bool IsIntermediateAssemblyPath(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return false;
+
+            foreach (var segment in new[] { "obj", "ref", "refint" })
+            {
+                if (PathContainsDirectorySegment(filePath, segment))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool PathContainsDirectorySegment(string filePath, string segment)
         {
             var sep = Path.DirectorySeparatorChar;
-            return filePath.Contains($"{sep}ref{sep}", StringComparison.OrdinalIgnoreCase);
+            var alt = Path.AltDirectorySeparatorChar;
+            return filePath.Contains($"{sep}{segment}{sep}", StringComparison.OrdinalIgnoreCase) ||
+                   filePath.Contains($"{alt}{segment}{alt}", StringComparison.OrdinalIgnoreCase);
         }
 
         private string FindBuiltDll(string projectFile, List<string> buildOutput)
@@ -1121,12 +1147,12 @@ namespace AOSharp.Services
             if (!string.IsNullOrEmpty(projDir))
             {
                 var underProj = candidates.LastOrDefault(p =>
-                    p.StartsWith(projDir, StringComparison.OrdinalIgnoreCase) && !IsUnderRefDirectory(p));
+                    p.StartsWith(projDir, StringComparison.OrdinalIgnoreCase) && !IsIntermediateAssemblyPath(p));
                 if (underProj != null)
                     return underProj;
             }
 
-            return candidates.LastOrDefault(p => !IsUnderRefDirectory(p))
+            return candidates.LastOrDefault(p => !IsIntermediateAssemblyPath(p))
                    ?? TryProbeDefaultBuildOutputDll(projectFile, projectStem);
         }
 
