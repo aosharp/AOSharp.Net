@@ -26,7 +26,8 @@ Use these steps when you have the launcher from a release package or a local bui
 ### What you need
 
 - Windows 10 or later
-- [.NET 10](https://dotnet.microsoft.com/download/dotnet/10.0) runtime (or SDK) matching the release
+- [.NET 10](https://dotnet.microsoft.com/download/dotnet/10.0) runtime (or SDK) matching the release — use the **SDK** if you install or compile plugins from git repositories
+- [Git](https://git-scm.com/downloads) — required to clone, update, and compile **repo** plugins (Official/Community sources, or adding a plugin from a URL). Not needed if you only add prebuilt `.dll` plugins
 - Anarchy Online client
 
 ### From a release
