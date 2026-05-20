@@ -29,6 +29,12 @@ namespace AOSharp
 
         public string RepoUrl { get; set; }
 
+        /// <summary>Optional branch pin. Ignored when <see cref="RepoCommit"/> is set.</summary>
+        public string RepoBranch { get; set; }
+
+        /// <summary>Optional commit pin (full or short SHA). Takes precedence over <see cref="RepoBranch"/>.</summary>
+        public string RepoCommit { get; set; }
+
         /// <summary>
         /// Absolute path to the .csproj this entry represents within the cloned repo.
         /// Null for DLL plugins and for uncompiled repo stubs.

@@ -42,7 +42,7 @@ namespace AOSharp.Services
                 return false;
 
             var relPath = Path.GetRelativePath(depLocal, csprojPath);
-            pluginKey = Utils.HashFromString(repoUrl + "|" + relPath);
+            pluginKey = RepoCompiler.GetPluginConfigKey(RepoRef.FromUrl(repoUrl), relPath);
             return true;
         }
 

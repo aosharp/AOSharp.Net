@@ -19,6 +19,8 @@ export function AddPluginDialog({ onClose }: Props) {
   // Repo tab state
   const [repoStep, setRepoStep] = useState<RepoStep>('url');
   const [repoUrl, setRepoUrl] = useState('');
+  const [repoBranch, setRepoBranch] = useState('');
+  const [repoCommit, setRepoCommit] = useState('');
   const [isFetching, setIsFetching] = useState(false);
   const [projects, setProjects] = useState<RepoProject[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -35,7 +37,11 @@ export function AddPluginDialog({ onClose }: Props) {
     const url = repoUrl.trim();
     if (!url) return;
     setIsFetching(true);
-    const found = await requestRepoCsprojs(url);
+    const found = await requestRepoCsprojs(
+      url,
+      repoBranch.trim() || undefined,
+      repoCommit.trim() || undefined,
+    );
     setProjects(found);
     setSelected(new Set(found.map((p) => p.path)));
     setIsFetching(false);
@@ -56,10 +62,12 @@ export function AddPluginDialog({ onClose }: Props) {
       sendToHost({ type: 'addDllPlugin', path: dllPath });
     } else {
       const url = repoUrl.trim();
+      const branch = repoBranch.trim() || undefined;
+      const commit = repoCommit.trim() || undefined;
       if (!url || selected.size === 0) return;
       for (const proj of projects) {
         if (selected.has(proj.path)) {
-          sendToHost({ type: 'addRepoPlugin', url, projectFilePath: proj.path });
+          sendToHost({ type: 'addRepoPlugin', url, branch, commit, projectFilePath: proj.path });
         }
       }
     }
@@ -71,6 +79,13 @@ export function AddPluginDialog({ onClose }: Props) {
     setProjects([]);
     setSelected(new Set());
   }
+
+  const repoRefHint =
+    repoCommit.trim()
+      ? 'Commit is set; branch will be ignored for checkout.'
+      : repoBranch.trim()
+        ? 'Projects will be added from this branch.'
+        : null;
 
   const canAdd =
     tab === 'dll' ? !!dllPath : repoStep === 'projects' && selected.size > 0;
@@ -155,9 +170,31 @@ export function AddPluginDialog({ onClose }: Props) {
               onChange={(e) => setRepoUrl(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') handleFetchProjects(); }}
               placeholder="https://github.com/..."
-              style={{ ...inputStyle, marginBottom: 0 }}
+              style={{ ...inputStyle, marginBottom: 10 }}
               autoFocus
             />
+            <label style={labelStyle}>Branch (optional)</label>
+            <input
+              value={repoBranch}
+              onChange={(e) => setRepoBranch(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleFetchProjects(); }}
+              placeholder="main"
+              style={{ ...inputStyle, marginBottom: 10 }}
+              disabled={!!repoCommit.trim()}
+            />
+            <label style={labelStyle}>Commit (optional)</label>
+            <input
+              value={repoCommit}
+              onChange={(e) => setRepoCommit(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleFetchProjects(); }}
+              placeholder="full or short SHA"
+              style={{ ...inputStyle, marginBottom: repoRefHint ? 6 : 0 }}
+            />
+            {repoRefHint && (
+              <p style={{ margin: 0, fontSize: 11, color: 'var(--color-text-muted)', lineHeight: 1.4 }}>
+                {repoRefHint}
+              </p>
+            )}
           </div>
         )}
 

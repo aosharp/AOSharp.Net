@@ -74,36 +74,61 @@ namespace AOSharp.Services
         /// Fetches from origin and returns whether an update is available plus both short commit hashes.
         /// Does not modify the working tree. Returns <c>(false, null, null)</c> if not yet cloned.
         /// </summary>
-        public (bool hasUpdate, string localCommit, string remoteCommit) CheckForUpdate(string repoUrl)
+        public (bool hasUpdate, string localCommit, string remoteCommit) CheckForUpdate(RepoRef repoRef)
         {
-            var localPath = GetLocalRepoPath(repoUrl);
+            if (!repoRef.IsValid)
+                return (false, null, null);
+
+            var localPath = GetLocalRepoPath(repoRef);
             if (!Directory.Exists(Path.Combine(localPath, ".git")))
                 return (false, null, null);
 
             var localHead = RunGitSingleLine(localPath, "rev-parse --short HEAD");
-            if (localHead == null) return (false, null, null);
+            if (localHead == null)
+                return (false, null, null);
 
-            // Fetch from remote without touching the working tree
+            if (repoRef.IsCommitPinned)
+                return (false, localHead, null);
+
             RunGit(localPath, "fetch origin");
 
-            var remoteHead = RunGitSingleLine(localPath, "rev-parse --short FETCH_HEAD");
-            if (remoteHead == null) return (false, localHead, null);
+            string remoteHead;
+            if (repoRef.IsBranchPinned)
+            {
+                remoteHead = RunGitSingleLine(localPath, $"rev-parse --short origin/{QuoteGitRef(repoRef.Branch)}");
+                if (remoteHead == null)
+                    remoteHead = RunGitSingleLine(localPath, "rev-parse --short FETCH_HEAD");
+            }
+            else
+            {
+                remoteHead = RunGitSingleLine(localPath, "rev-parse --short FETCH_HEAD");
+            }
+
+            if (remoteHead == null)
+                return (false, localHead, null);
 
             bool hasUpdate = !string.Equals(localHead, remoteHead, StringComparison.OrdinalIgnoreCase);
             return (hasUpdate, localHead, remoteHead);
         }
 
+        public (bool hasUpdate, string localCommit, string remoteCommit) CheckForUpdate(string repoUrl) =>
+            CheckForUpdate(RepoRef.FromUrl(repoUrl));
+
         /// <summary>
         /// Returns the short commit hash of the local HEAD without network access.
         /// Returns null if the repo has not been cloned yet.
         /// </summary>
-        public string GetLocalCommit(string repoUrl)
+        public string GetLocalCommit(RepoRef repoRef)
         {
-            var localPath = GetLocalRepoPath(repoUrl);
+            if (!repoRef.IsValid)
+                return null;
+            var localPath = GetLocalRepoPath(repoRef);
             if (!Directory.Exists(Path.Combine(localPath, ".git")))
                 return null;
             return RunGitSingleLine(localPath, "rev-parse --short HEAD");
         }
+
+        public string GetLocalCommit(string repoUrl) => GetLocalCommit(RepoRef.FromUrl(repoUrl));
 
         /// <summary>
         /// Runs a git command and returns the first non-empty output line, or null.
@@ -206,28 +231,154 @@ namespace AOSharp.Services
         }
 
         /// <summary>
-        /// Clones the repo if not present locally, or pulls latest changes if it is.
+        /// Clones or syncs a repo to match <paramref name="repoRef"/> (branch/commit pin).
+        /// When <paramref name="pull"/> is true, fast-forwards tracking branches; commit pins never pull.
         /// </summary>
-        public bool CloneOrPull(string repoUrl, string localPath)
+        public bool EnsureRepoCheckout(RepoRef repoRef, string localPath, bool pull = false)
         {
-            if (Directory.Exists(Path.Combine(localPath, ".git")))
-            {
-                PrepareRepoForGitOperation(localPath);
-                var output = new List<string>();
-                if (RunProcess("git", "pull --ff-only", localPath, output))
-                    return true;
+            if (!repoRef.IsValid || string.IsNullOrEmpty(localPath))
+                return false;
 
-                LogGitFailure(localPath, "pull --ff-only", output);
+            if (Directory.Exists(Path.Combine(localPath, ".git")))
+                return SyncExistingClone(repoRef, localPath, pull);
+
+            return CloneFresh(repoRef, localPath);
+        }
+
+        public bool CloneOrPull(string repoUrl, string localPath) =>
+            EnsureRepoCheckout(RepoRef.FromUrl(repoUrl), localPath, pull: true);
+
+        public bool CloneOrPull(RepoRef repoRef, string localPath, bool pull) =>
+            EnsureRepoCheckout(repoRef, localPath, pull);
+
+        private bool CloneFresh(RepoRef repoRef, string localPath)
+        {
+            Directory.CreateDirectory(localPath);
+            var parent = Path.GetDirectoryName(localPath);
+            if (!string.IsNullOrEmpty(parent))
+                Directory.CreateDirectory(parent);
+
+            var cloneOutput = new List<string>();
+            bool cloned;
+            if (repoRef.IsBranchPinned)
+            {
+                cloned = RunProcess("git",
+                    $"clone --branch {QuoteGitRef(repoRef.Branch)} -- \"{repoRef.Url}\" \"{localPath}\"",
+                    Directories.ReposDirPath, cloneOutput);
+            }
+            else
+            {
+                cloned = RunProcess("git", $"clone \"{repoRef.Url}\" \"{localPath}\"", Directories.ReposDirPath,
+                    cloneOutput);
+            }
+
+            if (!cloned)
+            {
+                LogGitFailure(Directories.ReposDirPath, $"clone {repoRef.Url}", cloneOutput);
                 return false;
             }
 
-            Directory.CreateDirectory(localPath);
-            var cloneOutput = new List<string>();
-            if (RunProcess("git", $"clone \"{repoUrl}\" \"{localPath}\"", Directories.ReposDirPath, cloneOutput))
+            if (repoRef.IsCommitPinned)
+                return CheckoutCommit(localPath, repoRef.Commit, prepareFirst: false);
+
+            return true;
+        }
+
+        private bool SyncExistingClone(RepoRef repoRef, string localPath, bool pull)
+        {
+            if (repoRef.IsCommitPinned)
+            {
+                PrepareRepoForGitOperation(localPath);
+                var fetchOutput = new List<string>();
+                if (!RunProcess("git", "fetch origin", localPath, fetchOutput))
+                {
+                    LogGitFailure(localPath, "fetch origin", fetchOutput);
+                    return false;
+                }
+
+                return CheckoutCommit(localPath, repoRef.Commit, prepareFirst: false);
+            }
+
+            if (repoRef.IsBranchPinned)
+            {
+                PrepareRepoForGitOperation(localPath);
+                var branch = QuoteGitRef(repoRef.Branch);
+                var checkoutOutput = new List<string>();
+                if (!RunProcess("git", $"checkout -B {branch} origin/{branch}", localPath, checkoutOutput) &&
+                    !RunProcess("git", $"checkout {branch}", localPath, checkoutOutput))
+                {
+                    LogGitFailure(localPath, $"checkout {repoRef.Branch}", checkoutOutput);
+                    return false;
+                }
+
+                if (!pull)
+                    return true;
+
+                var pullOutput = new List<string>();
+                if (RunProcess("git", "pull --ff-only", localPath, pullOutput))
+                    return true;
+
+                LogGitFailure(localPath, "pull --ff-only", pullOutput);
+                return false;
+            }
+
+            PrepareRepoForGitOperation(localPath);
+            if (!pull)
                 return true;
 
-            LogGitFailure(Directories.ReposDirPath, $"clone {repoUrl}", cloneOutput);
+            var output = new List<string>();
+            if (RunProcess("git", "pull --ff-only", localPath, output))
+                return true;
+
+            LogGitFailure(localPath, "pull --ff-only", output);
             return false;
+        }
+
+        private bool CheckoutCommit(string localPath, string commit, bool prepareFirst)
+        {
+            if (prepareFirst)
+                PrepareRepoForGitOperation(localPath);
+
+            var output = new List<string>();
+            if (RunProcess("git", $"checkout --detach {QuoteGitRef(commit)}", localPath, output))
+                return true;
+
+            LogGitFailure(localPath, $"checkout --detach {commit}", output);
+            return false;
+        }
+
+        /// <summary>
+        /// Returns <c>origin/&lt;branch&gt;</c> default branch name (e.g. <c>main</c>), or null.
+        /// </summary>
+        public string GetDefaultRemoteBranch(string localPath)
+        {
+            if (string.IsNullOrEmpty(localPath) || !Directory.Exists(Path.Combine(localPath, ".git")))
+                return null;
+
+            var sym = RunGitSingleLine(localPath, "symbolic-ref --short refs/remotes/origin/HEAD");
+            if (string.IsNullOrEmpty(sym))
+                return null;
+
+            const string prefix = "origin/";
+            if (sym.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return sym.Substring(prefix.Length);
+
+            return sym;
+        }
+
+        public string FormatPluginDisplayName(RepoRef repoRef, string csprojFileName, string localPath)
+        {
+            var defaultBranch = GetDefaultRemoteBranch(localPath);
+            return repoRef.FormatPluginDisplayName(csprojFileName, defaultBranch);
+        }
+
+        private static string QuoteGitRef(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return "\"\"";
+            if (value.IndexOfAny(new[] { ' ', '\t', '"', '\'', '\\' }) >= 0)
+                return "\"" + value.Replace("\"", "\\\"") + "\"";
+            return value;
         }
 
         // ── Project discovery ──────────────────────────────────────────────────
@@ -2407,19 +2558,23 @@ namespace AOSharp.Services
 
             var manifestDepsCompleted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            // Group by repo URL; compile libraries first
+            // Group by clone identity (URL + branch + commit); compile libraries first
             var groups = plugins
                 .Where(p => p.Value.PluginType == PluginType.Repo)
-                .GroupBy(p => p.Value.RepoUrl)
+                .GroupBy(p => RepoRef.FromPlugin(p.Value).IdentityKey)
                 .OrderByDescending(g => g.Any(p => p.Value.IsLibrary))
                 .ThenBy(g => g.Key)
                 .ToList();
 
             foreach (var group in groups)
             {
-                var repoUrl = group.Key;
-                var localPath = GetLocalRepoPath(repoUrl);
                 var repoEntries = group.ToList();
+                var representative = (repoEntries.Any(p => p.Value.IsStub)
+                    ? repoEntries.First(p => p.Value.IsStub)
+                    : repoEntries[0]).Value;
+                var repoRef = RepoRef.FromPlugin(representative);
+                var repoUrl = repoRef.Url;
+                var localPath = GetLocalRepoPath(repoRef);
 
                 if (!forceRebuild && repoEntries.All(e => HasCompiledOutput(e.Value)))
                     continue;
@@ -2428,8 +2583,6 @@ namespace AOSharp.Services
                 var stubs = repoEntries.Where(p => p.Value.IsStub).ToList();
                 var projectEntries = repoEntries.Where(p => !p.Value.IsStub).ToList();
 
-                // Inherit repo-level settings from the first stub (or first entry)
-                var representative = (stubs.Any() ? stubs[0] : projectEntries[0]).Value;
                 var repoName = representative.Name;
 
                 // Collect this group's mutations separately so we can fire the callback
@@ -2437,10 +2590,10 @@ namespace AOSharp.Services
 
                 Report(repoName, $"Processing {repoUrl}");
 
-                // Clone or pull
-                if (pullFirst)
+                // Clone or sync checkout
+                if (pullFirst && !repoRef.IsCommitPinned)
                 {
-                    bool pulled = await Task.Run(() => CloneOrPull(repoUrl, localPath));
+                    bool pulled = await Task.Run(() => EnsureRepoCheckout(repoRef, localPath, pull: true));
                     if (!pulled)
                     {
                         Report(repoName, "Failed to clone/pull.", isError: true);
@@ -2451,10 +2604,21 @@ namespace AOSharp.Services
                 }
                 else if (!Directory.Exists(Path.Combine(localPath, ".git")))
                 {
-                    bool cloned = await Task.Run(() => CloneOrPull(repoUrl, localPath));
+                    bool cloned = await Task.Run(() => EnsureRepoCheckout(repoRef, localPath, pull: false));
                     if (!cloned)
                     {
                         Report(repoName, "Failed to clone.", isError: true);
+                        groupResult.AllSucceeded = false;
+                        MergeAndNotify(result, groupResult, onGroupComplete);
+                        continue;
+                    }
+                }
+                else if (repoRef.IsCommitPinned || repoRef.IsBranchPinned)
+                {
+                    bool synced = await Task.Run(() => EnsureRepoCheckout(repoRef, localPath, pull: false));
+                    if (!synced)
+                    {
+                        Report(repoName, "Failed to sync repository checkout.", isError: true);
                         groupResult.AllSucceeded = false;
                         MergeAndNotify(result, groupResult, onGroupComplete);
                         continue;
@@ -2594,19 +2758,22 @@ namespace AOSharp.Services
                     foreach (var (projName, csprojPath, projIsLibrary, section, author, description, depUrls) in discoveredProjects)
                     {
                         var relPath = Path.GetRelativePath(localPath, csprojPath);
-                        var key = Utils.HashFromString(repoUrl + "|" + relPath);
+                        var key = GetPluginConfigKey(repoRef, relPath);
 
                         if (groupResult.NewEntries.ContainsKey(key))
                             continue;
 
-                        var projOutputDir = GetPluginOutputPath(isSdkRepo ? projName : repoName);
+                        var displayName = FormatPluginDisplayName(repoRef, csprojPath, localPath);
+                        var projOutputDir = GetPluginOutputPath(isSdkRepo ? projName : displayName);
                         var dllPath = ResolveProjectDll(projName, projOutputDir);
 
                         groupResult.NewEntries[key] = new PluginModel
                         {
                             PluginType = PluginType.Repo,
-                            Name = projName,
+                            Name = displayName,
                             RepoUrl = repoUrl,
+                            RepoBranch = representative.RepoBranch,
+                            RepoCommit = representative.RepoCommit,
                             ProjectFilePath = csprojPath,
                             IsLibrary = projIsLibrary,
                             Section = section,
@@ -2672,13 +2839,14 @@ namespace AOSharp.Services
             var entries = singleEntry.Select(kvp => kvp).ToList();
 
             var result = new CompileResult();
-            var localPath = GetLocalRepoPath(plugin.RepoUrl);
+            var repoRef = RepoRef.FromPlugin(plugin);
+            var localPath = GetLocalRepoPath(repoRef);
 
             Report(plugin.Name, $"Processing {plugin.RepoUrl}");
 
-            if (pullFirst)
+            if (pullFirst && !repoRef.IsCommitPinned)
             {
-                bool pulled = await Task.Run(() => CloneOrPull(plugin.RepoUrl, localPath));
+                bool pulled = await Task.Run(() => EnsureRepoCheckout(repoRef, localPath, pull: true));
                 if (!pulled)
                 {
                     Report(plugin.Name, "Failed to clone/pull.", isError: true);
@@ -2688,10 +2856,20 @@ namespace AOSharp.Services
             }
             else if (!Directory.Exists(Path.Combine(localPath, ".git")))
             {
-                bool cloned = await Task.Run(() => CloneOrPull(plugin.RepoUrl, localPath));
+                bool cloned = await Task.Run(() => EnsureRepoCheckout(repoRef, localPath, pull: false));
                 if (!cloned)
                 {
                     Report(plugin.Name, "Failed to clone.", isError: true);
+                    result.AllSucceeded = false;
+                    return result;
+                }
+            }
+            else if (repoRef.IsCommitPinned || repoRef.IsBranchPinned)
+            {
+                bool synced = await Task.Run(() => EnsureRepoCheckout(repoRef, localPath, pull: false));
+                if (!synced)
+                {
+                    Report(plugin.Name, "Failed to sync repository checkout.", isError: true);
                     result.AllSucceeded = false;
                     return result;
                 }
@@ -2747,13 +2925,16 @@ namespace AOSharp.Services
                     foreach (var (projName, csprojPath, projIsLibrary, section, author, description, depUrls) in discovered)
                     {
                         var relPath = Path.GetRelativePath(localPath, csprojPath);
-                        var key = Utils.HashFromString(plugin.RepoUrl + "|" + relPath);
-                        var dllPath = ResolveProjectDll(projName, GetPluginOutputPath(projName));
+                        var key = GetPluginConfigKey(repoRef, relPath);
+                        var displayName = FormatPluginDisplayName(repoRef, csprojPath, localPath);
+                        var dllPath = ResolveProjectDll(projName, GetPluginOutputPath(displayName));
                         result.NewEntries[key] = new PluginModel
                         {
                             PluginType = PluginType.Repo,
-                            Name = projName,
+                            Name = displayName,
                             RepoUrl = plugin.RepoUrl,
+                            RepoBranch = plugin.RepoBranch,
+                            RepoCommit = plugin.RepoCommit,
                             ProjectFilePath = csprojPath,
                             IsLibrary = projIsLibrary,
                             Section = section,
@@ -2803,14 +2984,17 @@ namespace AOSharp.Services
                 foreach (var (projName, csprojPath, projIsLibrary, section, author, description, depUrls) in discovered)
                 {
                     var relPath = Path.GetRelativePath(localPath, csprojPath);
-                    var key = Utils.HashFromString(plugin.RepoUrl + "|" + relPath);
-                    var dllPath = ResolveProjectDll(projName, outputDir);
+                    var key = GetPluginConfigKey(repoRef, relPath);
+                    var displayName = FormatPluginDisplayName(repoRef, csprojPath, localPath);
+                    var dllPath = ResolveProjectDll(projName, GetPluginOutputPath(displayName));
 
                     result.NewEntries[key] = new PluginModel
                     {
                         PluginType = PluginType.Repo,
-                        Name = projName,
+                        Name = displayName,
                         RepoUrl = plugin.RepoUrl,
+                        RepoBranch = plugin.RepoBranch,
+                        RepoCommit = plugin.RepoCommit,
                         ProjectFilePath = csprojPath,
                         IsLibrary = projIsLibrary,
                         Section = section,
@@ -2835,13 +3019,22 @@ namespace AOSharp.Services
 
         // ── Helpers ────────────────────────────────────────────────────────────
 
-        public static string GetLocalRepoPath(string repoUrl)
+        public static string GetLocalRepoPath(RepoRef repoRef)
         {
-            if (string.IsNullOrEmpty(repoUrl))
+            if (!repoRef.IsValid)
                 return null;
 
-            return Path.Combine(Directories.ReposDirPath, Utils.HashFromString(repoUrl));
+            return Path.Combine(Directories.ReposDirPath, Utils.HashFromString(repoRef.IdentityKey));
         }
+
+        public static string GetLocalRepoPath(PluginModel plugin) =>
+            plugin == null ? null : GetLocalRepoPath(RepoRef.FromPlugin(plugin));
+
+        public static string GetLocalRepoPath(string repoUrl) =>
+            GetLocalRepoPath(RepoRef.FromUrl(repoUrl));
+
+        public static string GetPluginConfigKey(RepoRef repoRef, string projectRelativePath) =>
+            Utils.HashFromString(repoRef.IdentityKey + "|" + projectRelativePath);
 
         /// <summary>
         /// Deletes compiled output under <see cref="Directories.PluginsDirPath"/> and the cloned repo
@@ -2855,21 +3048,21 @@ namespace AOSharp.Services
             foreach (var outputDir in GetPluginOutputDirectories(plugin))
                 TryDeleteDirectoryRecursive(outputDir);
 
-            var repoUrl = plugin.RepoUrl;
-            if (string.IsNullOrEmpty(repoUrl) || IsRepoUrlReferenced(config, repoUrl))
+            var repoRef = RepoRef.FromPlugin(plugin);
+            if (!repoRef.IsValid || IsRepoCloneReferenced(config, repoRef))
                 return;
 
             // Shared SDK source clone; other entries or the loader may still need it after config changes.
-            if (string.Equals(repoUrl, Config.AoSharpSdkRepoUrl, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(repoRef.Url, Config.AoSharpSdkRepoUrl, StringComparison.OrdinalIgnoreCase) &&
+                !repoRef.IsBranchPinned && !repoRef.IsCommitPinned)
                 return;
 
-            TryDeleteDirectoryRecursive(GetLocalRepoPath(repoUrl));
+            TryDeleteDirectoryRecursive(GetLocalRepoPath(repoRef));
         }
 
-        private static bool IsRepoUrlReferenced(Config config, string repoUrl) =>
+        private static bool IsRepoCloneReferenced(Config config, RepoRef repoRef) =>
             config.Plugins.Values.Any(p =>
-                p.PluginType == PluginType.Repo &&
-                string.Equals(p.RepoUrl, repoUrl, StringComparison.OrdinalIgnoreCase));
+                p.PluginType == PluginType.Repo && RepoRef.FromPlugin(p).Equals(repoRef));
 
         private static IEnumerable<string> GetPluginOutputDirectories(PluginModel plugin)
         {

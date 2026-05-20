@@ -31,7 +31,7 @@ interface Store extends AppState {
 
   dismissToast: (id: number) => void;
   requestBrowse: (kind: BrowseKind) => Promise<string | null>;
-  requestRepoCsprojs: (url: string) => Promise<RepoProject[]>;
+  requestRepoCsprojs: (url: string, branch?: string, commit?: string) => Promise<RepoProject[]>;
   _applyState: (s: AppState) => void;
 }
 
@@ -63,10 +63,15 @@ export const useStore = create<Store>((set, get) => ({
     });
   },
 
-  requestRepoCsprojs: (url) => {
+  requestRepoCsprojs: (url, branch, commit) => {
     return new Promise<RepoProject[]>((resolve) => {
       set({ _repoCsprojsResolver: resolve });
-      sendToHost({ type: 'fetchRepoCsprojs', url });
+      sendToHost({
+        type: 'fetchRepoCsprojs',
+        url,
+        branch: branch?.trim() || undefined,
+        commit: commit?.trim() || undefined,
+      });
     });
   },
 

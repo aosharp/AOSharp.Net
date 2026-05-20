@@ -14,6 +14,8 @@ export interface Plugin {
   name: string;
   path: string;
   repoUrl: string | null;
+  repoBranch?: string | null;
+  repoCommit?: string | null;
   projectFilePath: string | null;
   isStub: boolean;
   autoUpdate: boolean;
@@ -93,13 +95,13 @@ export type OutboundMessage =
   | { type: 'updatePlugin'; key: string; trustRepo?: boolean }
   | { type: 'checkUpdates' }
   | { type: 'addDllPlugin'; path: string }
-  | { type: 'addRepoPlugin'; url: string; projectFilePath: string }
+  | { type: 'addRepoPlugin'; url: string; branch?: string; commit?: string; projectFilePath: string }
   | { type: 'removePlugin'; key: string }
   | { type: 'openUrl'; url: string }
   | { type: 'openLogFile' }
   | { type: 'browseDll' }
   | { type: 'browseDirectory' }
-  | { type: 'fetchRepoCsprojs'; url: string }
+  | { type: 'fetchRepoCsprojs'; url: string; branch?: string; commit?: string }
   | { type: 'enableLargeAddressAware'; installDir: string }
   | { type: 'assignLoadout'; profileId: string; loadoutId: string }
   | { type: 'createLoadout'; name: string; pluginKeys?: string[]; sourceLoadoutId?: string }

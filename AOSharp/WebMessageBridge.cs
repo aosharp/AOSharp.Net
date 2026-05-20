@@ -149,11 +149,11 @@ namespace AOSharp
                         break;
 
                     case "fetchRepoCsprojs":
-                        await HandleFetchRepoCsprojsAsync(msg.Url);
+                        await HandleFetchRepoCsprojsAsync(msg.Url, msg.Branch, msg.Commit);
                         break;
 
                     case "addRepoPlugin":
-                        await HandleAddRepoPluginAsync(msg.Url, msg.ProjectFilePath);
+                        await HandleAddRepoPluginAsync(msg.Url, msg.Branch, msg.Commit, msg.ProjectFilePath);
                         break;
 
                     case "removePlugin":
@@ -629,8 +629,17 @@ namespace AOSharp
 
             try
             {
-                var localPath = RepoCompiler.GetLocalRepoPath(plugin.RepoUrl);
-                if (!await Task.Run(() => _repoCompiler.CloneOrPull(plugin.RepoUrl, localPath)))
+                var repoRef = RepoRef.FromPlugin(plugin);
+                if (repoRef.IsCommitPinned)
+                {
+                    SendToast("error", "Update Plugin",
+                        "This plugin is pinned to a specific commit. Remove and re-add with a different commit to change versions.",
+                        openLogOnClick: true);
+                    return;
+                }
+
+                var localPath = RepoCompiler.GetLocalRepoPath(repoRef);
+                if (!await Task.Run(() => _repoCompiler.EnsureRepoCheckout(repoRef, localPath, pull: true)))
                 {
                     SendToast("error", "Update Plugin", "Failed to pull repository.", openLogOnClick: true);
                     return;
@@ -648,10 +657,9 @@ namespace AOSharp
                 {
                     PruneManifestDependenciesAndRefreshState();
 
-                    var newCommit = _repoCompiler.GetLocalCommit(plugin.RepoUrl);
+                    var newCommit = _repoCompiler.GetLocalCommit(repoRef);
                     foreach (var p in _config.Plugins.Values.Where(p =>
-                                 p.PluginType == PluginType.Repo &&
-                                 string.Equals(p.RepoUrl, plugin.RepoUrl, StringComparison.OrdinalIgnoreCase)))
+                                 p.PluginType == PluginType.Repo && RepoRef.FromPlugin(p).Equals(repoRef)))
                     {
                         p.HasUpdate = false;
                         if (!string.IsNullOrEmpty(newCommit))
@@ -686,23 +694,20 @@ namespace AOSharp
         /// </summary>
         private async Task HandleCheckUpdatesAsync()
         {
-            var repoUrls = _config.Plugins.Values
-                .Where(p => p.PluginType == PluginType.Repo && !string.IsNullOrEmpty(p.RepoUrl))
-                .Select(p => p.RepoUrl)
-                .Distinct()
-                .ToList();
-
+            var repoRefs = GetDistinctRepoRefs().ToList();
             bool anyChanged = false;
 
-            foreach (var url in repoUrls)
+            foreach (var repoRef in repoRefs)
             {
-                var localPath = RepoCompiler.GetLocalRepoPath(url);
+                var localPath = RepoCompiler.GetLocalRepoPath(repoRef);
                 if (!Directory.Exists(Path.Combine(localPath, ".git")))
-                    continue; // Not yet cloned — nothing to check
+                    continue;
 
-                var (hasUpdate, localCommit, remoteCommit) = await Task.Run(() => _repoCompiler.CheckForUpdate(url));
+                var (hasUpdate, localCommit, remoteCommit) =
+                    await Task.Run(() => _repoCompiler.CheckForUpdate(repoRef));
 
-                foreach (var p in _config.Plugins.Values.Where(p => p.RepoUrl == url))
+                foreach (var p in _config.Plugins.Values.Where(p =>
+                             p.PluginType == PluginType.Repo && RepoRef.FromPlugin(p).Equals(repoRef)))
                 {
                     if (p.HasUpdate != hasUpdate || p.LocalCommit != localCommit || p.RemoteCommit != remoteCommit)
                     {
@@ -724,34 +729,34 @@ namespace AOSharp
         /// </summary>
         private void InitializeLocalCommits()
         {
-            RefreshLocalCommits(GetAllRepoUrls(), pushState: true);
+            RefreshLocalCommits(GetDistinctRepoRefs(), pushState: true);
         }
 
-        private IEnumerable<string> GetAllRepoUrls() =>
+        private IEnumerable<RepoRef> GetDistinctRepoRefs() =>
             _config.Plugins.Values
                 .Where(p => p.PluginType == PluginType.Repo && !string.IsNullOrEmpty(p.RepoUrl))
-                .Select(p => p.RepoUrl)
-                .Distinct(StringComparer.OrdinalIgnoreCase);
+                .Select(RepoRef.FromPlugin)
+                .Where(r => r.IsValid)
+                .Distinct();
 
         /// <summary>
         /// Updates <see cref="PluginModel.LocalCommit"/> from cloned repos (no fetch).
         /// </summary>
-        private void RefreshLocalCommits(IEnumerable<string> repoUrls, bool pushState = true)
+        private void RefreshLocalCommits(IEnumerable<RepoRef> repoRefs, bool pushState = true)
         {
             bool anyChanged = false;
 
-            foreach (var url in repoUrls ?? Enumerable.Empty<string>())
+            foreach (var repoRef in repoRefs ?? Enumerable.Empty<RepoRef>())
             {
-                if (string.IsNullOrEmpty(url))
+                if (!repoRef.IsValid)
                     continue;
 
-                var commit = _repoCompiler.GetLocalCommit(url);
+                var commit = _repoCompiler.GetLocalCommit(repoRef);
                 if (commit == null)
                     continue;
 
                 foreach (var p in _config.Plugins.Values.Where(p =>
-                             p.PluginType == PluginType.Repo &&
-                             string.Equals(p.RepoUrl, url, StringComparison.OrdinalIgnoreCase)))
+                             p.PluginType == PluginType.Repo && RepoRef.FromPlugin(p).Equals(repoRef)))
                 {
                     if (!string.Equals(p.LocalCommit, commit, StringComparison.OrdinalIgnoreCase))
                     {
@@ -788,7 +793,7 @@ namespace AOSharp
             });
         }
 
-        private async Task HandleFetchRepoCsprojsAsync(string url)
+        private async Task HandleFetchRepoCsprojsAsync(string url, string branch, string commit)
         {
             if (string.IsNullOrWhiteSpace(url))
             {
@@ -796,13 +801,13 @@ namespace AOSharp
                 return;
             }
 
-            url = url.Trim();
-            var localPath = RepoCompiler.GetLocalRepoPath(url);
+            var repoRef = new RepoRef(url.Trim(), branch, commit);
+            var localPath = RepoCompiler.GetLocalRepoPath(repoRef);
 
-            bool ok = await Task.Run(() => _repoCompiler.CloneOrPull(url, localPath));
+            bool ok = await Task.Run(() => _repoCompiler.EnsureRepoCheckout(repoRef, localPath, pull: false));
             if (!ok)
             {
-                SendToast("error", "Add Plugin", "Failed to clone repository.");
+                SendToast("error", "Add Plugin", "Failed to clone repository or checkout the requested ref.");
                 PostMessage(new { type = "repoCsprojs", projects = Array.Empty<object>() });
                 return;
             }
@@ -823,11 +828,11 @@ namespace AOSharp
             PostMessage(new { type = "repoCsprojs", projects });
         }
 
-        private async Task HandleAddRepoPluginAsync(string url, string projectFilePath)
+        private async Task HandleAddRepoPluginAsync(string url, string branch, string commit, string projectFilePath)
         {
             if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(projectFilePath)) return;
 
-            url = url.Trim();
+            var repoRef = new RepoRef(url.Trim(), branch, commit);
             projectFilePath = projectFilePath.Trim();
 
             if (projectFilePath.IndexOf($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
@@ -840,27 +845,31 @@ namespace AOSharp
                 return;
             }
 
-            var relPath = Path.GetRelativePath(RepoCompiler.GetLocalRepoPath(url), projectFilePath);
-            var key = Utils.HashFromString(url + "|" + relPath);
+            var localPath = RepoCompiler.GetLocalRepoPath(repoRef);
+            var relPath = Path.GetRelativePath(localPath, projectFilePath);
+            var key = RepoCompiler.GetPluginConfigKey(repoRef, relPath);
 
             if (_config.Plugins.ContainsKey(key))
             {
-                SendToast("error", "Add Plugin", $"{Path.GetFileNameWithoutExtension(projectFilePath)} is already added.");
+                SendToast("error", "Add Plugin", $"{Path.GetFileNameWithoutExtension(projectFilePath)} is already added for this ref.");
                 return;
             }
 
-            var name = Path.GetFileNameWithoutExtension(projectFilePath);
+            var name = _repoCompiler.FormatPluginDisplayName(repoRef, projectFilePath, localPath);
 
             var plugin = new PluginModel
             {
                 PluginType = PluginType.Repo,
                 Name = name,
-                RepoUrl = url,
+                RepoUrl = repoRef.Url,
+                RepoBranch = repoRef.Branch,
+                RepoCommit = repoRef.Commit,
                 ProjectFilePath = projectFilePath,
                 Path = string.Empty,
+                AutoUpdate = !repoRef.IsCommitPinned,
                 IsManifestDependency = false
             };
-            RepoCompiler.ApplyManifestToPlugin(plugin, RepoCompiler.GetLocalRepoPath(url));
+            RepoCompiler.ApplyManifestToPlugin(plugin, localPath);
             _config.Plugins.Add(key, plugin);
 
             await EnsureManifestDependenciesForConsumersAsync(new[] { plugin }, pullFirst: false);
@@ -1167,6 +1176,8 @@ namespace AOSharp
                         name = kvp.Value.Name,
                         path = kvp.Value.Path,
                         repoUrl = kvp.Value.RepoUrl,
+                        repoBranch = kvp.Value.RepoBranch,
+                        repoCommit = kvp.Value.RepoCommit,
                         projectFilePath = kvp.Value.ProjectFilePath,
                         isStub = kvp.Value.IsStub,
                         autoUpdate = kvp.Value.AutoUpdate,
@@ -1261,7 +1272,7 @@ namespace AOSharp
             SyncManifestDependencyPathsFromDisk();
 
             _config.EnsureDefaultsPublic();
-            RefreshLocalCommits(GetAllRepoUrls(), pushState: false);
+            RefreshLocalCommits(GetDistinctRepoRefs(), pushState: false);
             _config.Save();
             SendState();
 
@@ -1309,7 +1320,7 @@ namespace AOSharp
                              !c.IsManifestDependency &&
                              !string.IsNullOrEmpty(c.RepoUrl)))
                 {
-                    var local = RepoCompiler.GetLocalRepoPath(consumer.RepoUrl);
+                    var local = RepoCompiler.GetLocalRepoPath(consumer);
                     if (!string.IsNullOrEmpty(consumer.ProjectFilePath) && File.Exists(consumer.ProjectFilePath))
                         RepoCompiler.ApplyManifestToPlugin(consumer, local);
 
@@ -1329,7 +1340,7 @@ namespace AOSharp
             foreach (var prunedKey in PluginDependencyManager.PruneOrphanDependencies(_config, _repoCompiler))
                 PluginDependencyManager.RemovePluginKeyFromLoadouts(_config, prunedKey);
 
-            RefreshLocalCommits(GetAllRepoUrls(), pushState: false);
+            RefreshLocalCommits(GetDistinctRepoRefs(), pushState: false);
             _config.Save();
             SendState();
         }
@@ -1409,6 +1420,8 @@ namespace AOSharp
             [JsonProperty("trustRepo")] public bool TrustRepo { get; set; }
             [JsonProperty("path")] public string Path { get; set; }
             [JsonProperty("url")] public string Url { get; set; }
+            [JsonProperty("branch")] public string Branch { get; set; }
+            [JsonProperty("commit")] public string Commit { get; set; }
             [JsonProperty("isLibrary")] public bool IsLibrary { get; set; }
             [JsonProperty("projectFilePath")] public string ProjectFilePath { get; set; }
             [JsonProperty("enabled")] public bool Enabled { get; set; }
