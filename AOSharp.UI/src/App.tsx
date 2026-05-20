@@ -12,6 +12,7 @@ import { Toaster } from './components/Toaster';
 import { CompilingOverlay } from './components/CompilingOverlay';
 import { InjectingOverlay } from './components/InjectingOverlay';
 import { RefreshIcon } from './components/PluginGridIcons';
+import { AppUpdateBanner } from './components/AppUpdateBanner';
 
 export default function App() {
   const [showAddPlugin, setShowAddPlugin] = useState(false);
@@ -142,6 +143,8 @@ export default function App() {
           </span>
         </button>
       </div>
+
+      <AppUpdateBanner />
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         <ProfileList />

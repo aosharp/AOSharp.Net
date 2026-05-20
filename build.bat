@@ -58,9 +58,16 @@ popd
 :: ── Build managed projects ────────────────────────────────────────────────────
 echo Building managed projects...
 
-dotnet build AOSharp\AOSharp.csproj --configuration !CONFIG! --nologo
+dotnet build AOSharp\AOSharp.csproj --configuration !CONFIG! -p:PlatformTarget=x64 --nologo
 if errorlevel 1 (
   echo Managed build failed.
+  exit /b 1
+)
+
+echo Building AOSharp.Updater...
+dotnet build AOSharp.Updater\AOSharp.Updater.csproj --configuration !CONFIG! --nologo
+if errorlevel 1 (
+  echo AOSharp.Updater build failed.
   exit /b 1
 )
 
@@ -92,8 +99,8 @@ if errorlevel 1 (
 )
 
 :: ── Copy React dist next to exe ────────────────────────────────────────────
-if "!SKIP_UI!"=="1" goto :skip_ui_copy
 set "BINDIR=%~dp0bin\!CONFIG!\!MANAGED_TFM!"
+if "!SKIP_UI!"=="1" goto :skip_ui_copy
 set "UIDIST=%~dp0AOSharp.UI\dist"
 set "UIDEST=!BINDIR!\ui"
 echo Copying React UI to !UIDEST!...
@@ -104,6 +111,20 @@ if errorlevel 1 (
   exit /b 1
 )
 :skip_ui_copy
+
+:: ── Copy updater next to AOSharp.exe ───────────────────────────────────────
+set "UPDATER_SRC=%~dp0bin\!CONFIG!\net10.0\AOSharp.Updater.exe"
+set "UPDATER_DEST=!BINDIR!\AOSharp.Updater.exe"
+if exist "!UPDATER_SRC!" (
+  echo Copying AOSharp.Updater to !BINDIR!...
+  copy /y "!UPDATER_SRC!" "!UPDATER_DEST!" >nul
+  if errorlevel 1 (
+    echo Failed to copy AOSharp.Updater.exe.
+    exit /b 1
+  )
+) else (
+  echo Warning: AOSharp.Updater.exe not found at !UPDATER_SRC!
+)
 
 echo.
 echo Build succeeded.

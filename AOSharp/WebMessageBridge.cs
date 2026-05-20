@@ -38,6 +38,8 @@ namespace AOSharp
         private readonly System.Threading.SemaphoreSlim _manifestDependencyLock =
             new System.Threading.SemaphoreSlim(1, 1);
         private Timer _updateCheckTimer;
+        private Timer _appUpdateCheckTimer;
+        private readonly AppUpdateService _appUpdateService;
         private readonly HashSet<string> _previouslyActiveProfileNames = new HashSet<string>();
 
         private sealed class InjectJob
@@ -60,6 +62,8 @@ namespace AOSharp
             _profilesModel = profilesModel;
             _repoCompiler = repoCompiler;
             _dispatcher = dispatcher;
+            _appUpdateService = new AppUpdateService();
+            _appUpdateService.StateChanged += () => _dispatcher.BeginInvoke(SendAppUpdateState);
 
             _repoCompiler.Progress += OnCompileProgress;
 
@@ -78,6 +82,12 @@ namespace AOSharp
             _updateCheckTimer.AutoReset = true;
             _updateCheckTimer.Start();
             _ = HandleCheckUpdatesAsync();
+
+            _appUpdateCheckTimer = new Timer(TimeSpan.FromHours(6).TotalMilliseconds);
+            _appUpdateCheckTimer.Elapsed += async (_, _) => await HandleCheckAppUpdateAsync();
+            _appUpdateCheckTimer.AutoReset = true;
+            _appUpdateCheckTimer.Start();
+            _ = HandleCheckAppUpdateAsync();
 
             // Populate local commit hashes immediately (no network) so Commit column is populated before fetch completes
             _ = Task.Run(() => InitializeLocalCommits());
@@ -142,6 +152,22 @@ namespace AOSharp
 
                     case "checkUpdates":
                         await HandleCheckUpdatesAsync();
+                        break;
+
+                    case "checkAppUpdate":
+                        await HandleCheckAppUpdateAsync();
+                        break;
+
+                    case "downloadAppUpdate":
+                        await HandleDownloadAppUpdateAsync();
+                        break;
+
+                    case "applyAppUpdate":
+                        HandleApplyAppUpdate();
+                        break;
+
+                    case "dismissAppUpdate":
+                        HandleDismissAppUpdate();
                         break;
 
                     case "addDllPlugin":
@@ -723,6 +749,77 @@ namespace AOSharp
                 _dispatcher.BeginInvoke(SendState);
         }
 
+        private async Task HandleCheckAppUpdateAsync()
+        {
+            await _appUpdateService.CheckForUpdatesAsync();
+            _dispatcher.BeginInvoke(SendAppUpdateState);
+        }
+
+        private async Task HandleDownloadAppUpdateAsync()
+        {
+            try
+            {
+                SendAppUpdateState();
+                await _appUpdateService.DownloadUpdateAsync();
+                SendToast("info", "Update", "Update downloaded. Restart to apply.");
+            }
+            catch (Exception ex)
+            {
+                SendToast("error", "Update", ex.Message);
+            }
+            finally
+            {
+                _dispatcher.BeginInvoke(SendAppUpdateState);
+            }
+        }
+
+        private void HandleDismissAppUpdate()
+        {
+            _appUpdateService.DismissUpdateBanner();
+            SendAppUpdateState();
+        }
+
+        private void HandleApplyAppUpdate()
+        {
+            if (IsInjecting)
+            {
+                SendToast("error", "Update", "Eject from the game before applying a launcher update.");
+                return;
+            }
+
+            if (_isCompiling)
+            {
+                SendToast("error", "Update", "Wait for compilation to finish before applying a launcher update.");
+                return;
+            }
+
+            try
+            {
+                _appUpdateService.ApplyPendingUpdateAndShutdown();
+            }
+            catch (Exception ex)
+            {
+                SendToast("error", "Update", ex.Message);
+            }
+        }
+
+        private void SendAppUpdateState()
+        {
+            var snap = _appUpdateService.GetSnapshot();
+            PostMessage(new
+            {
+                type = "appUpdateState",
+                currentVersion = snap.CurrentVersion,
+                availableVersion = snap.AvailableVersion,
+                releaseNotesUrl = snap.ReleaseNotesUrl,
+                status = snap.Status.ToString(),
+                downloadProgressPercent = snap.DownloadProgressPercent,
+                error = snap.Error,
+                readyToApply = snap.ReadyToApply,
+                bannerVisible = snap.BannerVisible
+            });
+        }
+
         /// <summary>
         /// Reads local HEAD hashes for all already-cloned repos without any network access.
         /// Called once at startup so the Commit column is populated immediately.
@@ -1200,6 +1297,8 @@ namespace AOSharp
 
                 ApplyActiveLoadoutHighlight();
 
+                var appUpdate = _appUpdateService.GetSnapshot();
+
                 var state = new
                 {
                     type = "state",
@@ -1210,7 +1309,18 @@ namespace AOSharp
                     autoInject = _config.AutoInject,
                     isCompiling = _isCompiling,
                     isInjecting = IsInjecting,
-                    injectQueue = SnapshotInjectQueue()
+                    injectQueue = SnapshotInjectQueue(),
+                    appUpdate = new
+                    {
+                        currentVersion = appUpdate.CurrentVersion,
+                        availableVersion = appUpdate.AvailableVersion,
+                        releaseNotesUrl = appUpdate.ReleaseNotesUrl,
+                        status = appUpdate.Status.ToString(),
+                        downloadProgressPercent = appUpdate.DownloadProgressPercent,
+                        error = appUpdate.Error,
+                        readyToApply = appUpdate.ReadyToApply,
+                        bannerVisible = appUpdate.BannerVisible
+                    }
                 };
 
                 PostMessage(state);

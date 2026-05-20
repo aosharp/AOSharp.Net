@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
@@ -18,6 +19,17 @@ namespace AOSharp
 
         public MainWindow()
         {
+            if (AppUpdateApply.TryApplyOnStartupAndRestartIfNeeded())
+            {
+                Process.Start(new ProcessStartInfo(Environment.ProcessPath!)
+                {
+                    WorkingDirectory = AppUpdateApply.GetInstallDirectory(),
+                    UseShellExecute = true
+                });
+                Environment.Exit(0);
+                return;
+            }
+
             string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Log.txt");
             Log.Logger = new LoggerConfiguration()
                 .WriteTo.File(logPath, rollingInterval: RollingInterval.Day)

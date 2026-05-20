@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AppState, InboundMessage, Plugin, Profile, RepoProject } from './types';
+import type { AppState, AppUpdateState, InboundMessage, Plugin, Profile, RepoProject } from './types';
 import { onHostMessage, sendToHost, setHostLocked } from './bridge';
 
 interface Toast {
@@ -37,6 +37,17 @@ interface Store extends AppState {
 
 let _toastSeq = 0;
 
+const defaultAppUpdate: AppUpdateState = {
+  currentVersion: '0.0.0',
+  availableVersion: null,
+  releaseNotesUrl: null,
+  status: 'Idle',
+  downloadProgressPercent: 0,
+  error: null,
+  readyToApply: false,
+  bannerVisible: false,
+};
+
 export const useStore = create<Store>((set, get) => ({
   profiles: [],
   loadouts: [],
@@ -46,6 +57,7 @@ export const useStore = create<Store>((set, get) => ({
   isCompiling: false,
   isInjecting: false,
   injectQueue: [],
+  appUpdate: defaultAppUpdate,
   toasts: [],
   compileProgress: null,
   pendingBrowseKind: null,
@@ -102,7 +114,27 @@ export function initBridge(): void {
 
     if (msg.type === 'state') {
       const { type: _t, ...state } = msg;
-      store._applyState(state as AppState);
+      const incoming = state as AppState;
+      store._applyState({
+        ...incoming,
+        appUpdate: {
+          ...(incoming.appUpdate ?? defaultAppUpdate),
+          bannerVisible: incoming.appUpdate?.bannerVisible ?? defaultAppUpdate.bannerVisible,
+        },
+      });
+    } else if (msg.type === 'appUpdateState') {
+      useStore.setState({
+        appUpdate: {
+          currentVersion: msg.currentVersion,
+          availableVersion: msg.availableVersion,
+          releaseNotesUrl: msg.releaseNotesUrl,
+          status: msg.status,
+          downloadProgressPercent: msg.downloadProgressPercent,
+          error: msg.error,
+          readyToApply: msg.readyToApply,
+          bannerVisible: msg.bannerVisible,
+        },
+      });
     } else if (msg.type === 'injectProgress') {
       const locked = msg.isInjecting || store.isCompiling;
       setHostLocked(locked);

@@ -62,6 +62,26 @@ export interface InjectQueueItem {
   message?: string | null;
 }
 
+export type AppUpdateStatus =
+  | 'Idle'
+  | 'Checking'
+  | 'UpToDate'
+  | 'Available'
+  | 'Downloading'
+  | 'Ready'
+  | 'Error';
+
+export interface AppUpdateState {
+  currentVersion: string;
+  availableVersion: string | null;
+  releaseNotesUrl: string | null;
+  status: AppUpdateStatus;
+  downloadProgressPercent: number;
+  error: string | null;
+  readyToApply: boolean;
+  bannerVisible: boolean;
+}
+
 export interface AppState {
   profiles: Profile[];
   loadouts: Loadout[];
@@ -71,6 +91,7 @@ export interface AppState {
   isCompiling: boolean;
   isInjecting: boolean;
   injectQueue: InjectQueueItem[];
+  appUpdate: AppUpdateState;
 }
 
 // ── Messages C# → React ─────────────────────────────────────────────────────
@@ -81,7 +102,18 @@ export type InboundMessage =
   | { type: 'compileProgress'; pluginName: string; message: string }
   | { type: 'browseResult'; kind: 'dll' | 'directory'; path: string }
   | { type: 'repoCsprojs'; projects: RepoProject[] }
-  | { type: 'toast'; level: 'info' | 'error'; title: string; message: string; openLogOnClick?: boolean };
+  | { type: 'toast'; level: 'info' | 'error'; title: string; message: string; openLogOnClick?: boolean }
+  | {
+      type: 'appUpdateState';
+      currentVersion: string;
+      availableVersion: string | null;
+      releaseNotesUrl: string | null;
+      status: AppUpdateStatus;
+      downloadProgressPercent: number;
+      error: string | null;
+      readyToApply: boolean;
+      bannerVisible: boolean;
+    };
 
 // ── Messages React → C# ─────────────────────────────────────────────────────
 
@@ -94,6 +126,10 @@ export type OutboundMessage =
   | { type: 'compilePlugin'; key: string }
   | { type: 'updatePlugin'; key: string; trustRepo?: boolean }
   | { type: 'checkUpdates' }
+  | { type: 'checkAppUpdate' }
+  | { type: 'downloadAppUpdate' }
+  | { type: 'applyAppUpdate' }
+  | { type: 'dismissAppUpdate' }
   | { type: 'addDllPlugin'; path: string }
   | { type: 'addRepoPlugin'; url: string; branch?: string; commit?: string; projectFilePath: string }
   | { type: 'removePlugin'; key: string }

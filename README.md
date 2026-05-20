@@ -21,21 +21,32 @@ AOSharp gives you a clean API to interact with the game from C# code. With it yo
 
 ## Usage
 
-Use these steps when you already have a built launcher (from a **release package** or from **Build** below).
+Use these steps when you have the launcher from a release package or a local build (see **Build** below).
 
 ### What you need
 
 - Windows 10 or later
-- [.NET 8](https://dotnet.microsoft.com/download/dotnet/8) installed (runtime is enough to run the launcher; use the same major version the release targets)
+- [.NET 10](https://dotnet.microsoft.com/download/dotnet/10.0) runtime (or SDK) matching the release
 - Anarchy Online client
 
 ### From a release
 
-Download the latest Windows release archive from the project's releases page, extract it, and run `AOSharp.exe` from the extracted folder. The release notes list prerequisites and anything else you need for that build.
+Download the latest **`AOSharp-win-x64.zip`** from [GitHub Releases](https://github.com/aosharp/AOSharp.Net/releases), extract it, and run `AOSharp.exe` from the extracted folder. You do not need to build from source.
+
+### Updating the launcher
+
+When a newer release is published, AOSharp shows a banner at the top of the window:
+
+1. **Download** — fetches the release ZIP (verified with SHA256).
+2. **Restart to update** — closes the launcher, applies files in place, and reopens.
+
+Your plugins (`Plugins\`), cloned repos (`repos\`), and settings (`%LocalAppData%\AOSharp\`) are preserved. Eject from the game before applying an update.
+
+The toolbar **refresh** button still checks **plugin** repositories only, not the launcher itself.
 
 ### Run the launcher and inject
 
-1. Start **`AOSharp.exe`** (from the extracted release folder, or from `bin\Release\net8.0-windows\` after a Release build—see **Build**).
+1. Start **`AOSharp.exe`** (from your extracted release folder, or from `bin\Release\net10.0-windows\` after building—see **Build**).
 2. Add your plugin DLLs and organize them into a profile.
 3. Launch Anarchy Online and log in.
 4. Install plugins from Official or Community sources.
@@ -46,13 +57,13 @@ Download the latest Windows release archive from the project's releases page, ex
 
 ## Build
 
-Use this when you are compiling the **launcher** from this repository instead of using a prebuilt release.
+Use this when you are compiling the launcher from this repository instead of using a prebuilt release.
 
 ### What you need
 
 - Windows 10 or later
 - **Visual Studio 2022** (or Build Tools) with **MSBuild** and **Desktop development with C++**
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
 - **Node.js** (LTS) and npm
 - [Git](https://git-scm.com/downloads) (to clone the repository and its submodules)
 
@@ -72,13 +83,13 @@ build.bat --debug
 
 ### Output
 
-Artifacts go under `Loader\bin\<Configuration>\net8.0-windows\`, including `AOSharp.exe`, the native host, managed assemblies, and a `ui\` folder produced from the React build.
+Artifacts go under `Loader\bin\<Configuration>\net10.0-windows\`, including `AOSharp.exe`, `AOSharp.Updater.exe`, the native host, managed assemblies, and a `ui\` folder produced from the React build.
 
 ---
 
 ## Writing a Plugin
 
-You need the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8) to compile plugins. Create a class library project, reference `AOSharp.Core`, and implement `AOPluginEntry`:
+You need the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) to compile plugins. Create a class library project, reference `AOSharp.Core`, and implement `AOPluginEntry`:
 
 ```csharp
 using AOSharp.Core;
