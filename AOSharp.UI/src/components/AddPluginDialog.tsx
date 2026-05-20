@@ -21,6 +21,7 @@ export function AddPluginDialog({ onClose }: Props) {
   const [repoUrl, setRepoUrl] = useState('');
   const [repoBranch, setRepoBranch] = useState('');
   const [repoCommit, setRepoCommit] = useState('');
+  const [useLatest, setUseLatest] = useState(true);
   const [isFetching, setIsFetching] = useState(false);
   const [projects, setProjects] = useState<RepoProject[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -39,8 +40,8 @@ export function AddPluginDialog({ onClose }: Props) {
     setIsFetching(true);
     const found = await requestRepoCsprojs(
       url,
-      repoBranch.trim() || undefined,
-      repoCommit.trim() || undefined,
+      useLatest ? undefined : repoBranch.trim() || undefined,
+      useLatest ? undefined : repoCommit.trim() || undefined,
     );
     setProjects(found);
     setSelected(new Set(found.map((p) => p.path)));
@@ -62,8 +63,8 @@ export function AddPluginDialog({ onClose }: Props) {
       sendToHost({ type: 'addDllPlugin', path: dllPath });
     } else {
       const url = repoUrl.trim();
-      const branch = repoBranch.trim() || undefined;
-      const commit = repoCommit.trim() || undefined;
+      const branch = useLatest ? undefined : repoBranch.trim() || undefined;
+      const commit = useLatest ? undefined : repoCommit.trim() || undefined;
       if (!url || selected.size === 0) return;
       for (const proj of projects) {
         if (selected.has(proj.path)) {
@@ -80,12 +81,13 @@ export function AddPluginDialog({ onClose }: Props) {
     setSelected(new Set());
   }
 
-  const repoRefHint =
-    repoCommit.trim()
+  const repoRefHint = !useLatest
+    ? repoCommit.trim()
       ? 'Commit is set; branch will be ignored for checkout.'
       : repoBranch.trim()
         ? 'Projects will be added from this branch.'
-        : null;
+        : null
+    : null;
 
   const canAdd =
     tab === 'dll' ? !!dllPath : repoStep === 'projects' && selected.size > 0;
@@ -170,30 +172,60 @@ export function AddPluginDialog({ onClose }: Props) {
               onChange={(e) => setRepoUrl(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') handleFetchProjects(); }}
               placeholder="https://github.com/..."
-              style={{ ...inputStyle, marginBottom: 10 }}
+              style={{ ...inputStyle, marginBottom: 8 }}
               autoFocus
             />
-            <label style={labelStyle}>Branch (optional)</label>
-            <input
-              value={repoBranch}
-              onChange={(e) => setRepoBranch(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleFetchProjects(); }}
-              placeholder="main"
-              style={{ ...inputStyle, marginBottom: 10 }}
-              disabled={!!repoCommit.trim()}
-            />
-            <label style={labelStyle}>Commit (optional)</label>
-            <input
-              value={repoCommit}
-              onChange={(e) => setRepoCommit(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleFetchProjects(); }}
-              placeholder="full or short SHA"
-              style={{ ...inputStyle, marginBottom: repoRefHint ? 6 : 0 }}
-            />
-            {repoRefHint && (
-              <p style={{ margin: 0, fontSize: 11, color: 'var(--color-text-muted)', lineHeight: 1.4 }}>
-                {repoRefHint}
-              </p>
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                marginBottom: useLatest ? 0 : 10,
+                fontSize: 13,
+                cursor: 'pointer',
+                userSelect: 'none',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={useLatest}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setUseLatest(checked);
+                  if (checked) {
+                    setRepoBranch('');
+                    setRepoCommit('');
+                  }
+                }}
+                style={{ cursor: 'pointer' }}
+              />
+              Latest
+            </label>
+            {!useLatest && (
+              <>
+                <label style={labelStyle}>Branch (optional)</label>
+                <input
+                  value={repoBranch}
+                  onChange={(e) => setRepoBranch(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleFetchProjects(); }}
+                  placeholder="main"
+                  style={{ ...inputStyle, marginBottom: 10 }}
+                  disabled={!!repoCommit.trim()}
+                />
+                <label style={labelStyle}>Commit (optional)</label>
+                <input
+                  value={repoCommit}
+                  onChange={(e) => setRepoCommit(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleFetchProjects(); }}
+                  placeholder="full or short SHA"
+                  style={{ ...inputStyle, marginBottom: repoRefHint ? 6 : 0 }}
+                />
+                {repoRefHint && (
+                  <p style={{ margin: 0, fontSize: 11, color: 'var(--color-text-muted)', lineHeight: 1.4 }}>
+                    {repoRefHint}
+                  </p>
+                )}
+              </>
             )}
           </div>
         )}
